@@ -61,6 +61,8 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
 
     /**
      * Index a single JVS document.
+     * If the document has an id.did field, it will replace any existing document with the same ID.
+     * This ensures document uniqueness based on the identifier field.
      *
      * @param jvs The JVS document to index
      * @throws IOException if indexing fails
@@ -70,8 +72,21 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
         
         lock.writeLock().lock();
         try {
-            // Add document directly - SortedSetDocValuesFacetField handles faceting without FacetsConfig.build()
-            indexWriter.addDocument(doc);
+            // Try to extract document ID for update/replace logic
+            String docId = extractDocumentId(jvs);
+            
+            if (docId != null) {
+                // Add a special _uid field for guaranteed uniqueness
+                // This field is always indexed and can be reliably used for updates
+                doc.add(new org.apache.lucene.document.StringField(
+                    "_uid", docId, org.apache.lucene.document.Field.Store.YES));
+                
+                // Use _uid field for document replacement
+                indexWriter.updateDocument(new Term("_uid", docId), doc);
+            } else {
+                // No ID found, just add document
+                indexWriter.addDocument(doc);
+            }
             
             if (config.isAutoCommit()) {
                 // Auto-commit will be handled by periodic commit
@@ -80,24 +95,67 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
             lock.writeLock().unlock();
         }
     }
+    
+    /**
+     * Extract document ID from JVS for uniqueness checking.
+     * Tries multiple ID field patterns:
+     * 1. id.did (domain-specific ID)
+     * 2. id.id (combined domain:did format)
+     * 3. id (simple string ID)
+     */
+    private String extractDocumentId(JVS jvs) {
+        try {
+            // Try id.did first (most common pattern)
+            Object idObj = jvs.get("id.did");
+            if (idObj != null) {
+                return idObj.toString();
+            }
+            
+            // Try id.id (combined format like "sysobject:doc001")
+            idObj = jvs.get("id.id");
+            if (idObj != null) {
+                return idObj.toString();
+            }
+            
+            // Try simple id field
+            idObj = jvs.get("id");
+            if (idObj != null && idObj instanceof String) {
+                return idObj.toString();
+            }
+        } catch (Exception e) {
+            // ID not found or error accessing it
+        }
+        return null;
+    }
 
     /**
      * Index multiple JVS documents in a batch.
+     * Each document with an ID will replace any existing document with the same ID.
      *
      * @param documents List of JVS documents
      * @throws IOException if indexing fails
      */
     public void indexDocuments(List<JVS> documents) throws IOException {
-        List<Document> luceneDocs = new ArrayList<>(documents.size());
-        
-        for (JVS jvs : documents) {
-            Document doc = projectToLuceneDocument(jvs);
-            luceneDocs.add(doc);
-        }
-        
         lock.writeLock().lock();
         try {
-            indexWriter.addDocuments(luceneDocs);
+            for (JVS jvs : documents) {
+                Document doc = projectToLuceneDocument(jvs);
+                
+                // Extract document ID and use update logic for each document
+                String docId = extractDocumentId(jvs);
+                
+                if (docId != null) {
+                    // Add _uid field for guaranteed uniqueness
+                    doc.add(new org.apache.lucene.document.StringField(
+                        "_uid", docId, org.apache.lucene.document.Field.Store.YES));
+                    
+                    // Use _uid field for document replacement
+                    indexWriter.updateDocument(new Term("_uid", docId), doc);
+                } else {
+                    // No ID found, just add document
+                    indexWriter.addDocument(doc);
+                }
+            }
         } finally {
             lock.writeLock().unlock();
         }

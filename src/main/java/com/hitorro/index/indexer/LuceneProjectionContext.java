@@ -30,6 +30,7 @@ import org.apache.lucene.document.*;
 import org.apache.lucene.facet.FacetField;
 import org.apache.lucene.facet.sortedset.SortedSetDocValuesFacetField;
 import org.apache.lucene.index.IndexableField;
+import org.apache.lucene.util.BytesRef;
 
 /**
  * Context for projecting JVS documents to Lucene Documents.
@@ -62,16 +63,27 @@ public class LuceneProjectionContext extends ProjectionContext {
             return;
         }
 
+        // Determine if this is a multi-valued field based on field name suffix
+        boolean isMultiValued = fieldName.endsWith("_m");
+
         // Determine field storage and indexing options
         Field.Store store = fieldType.isStored() ? Field.Store.YES : Field.Store.NO;
 
         // Add the appropriate field type based on configuration
         if (fieldType.isTokenized() && fieldType.isIndexed()) {
-            // Tokenized text field
-            document.add(new TextField(fieldName, textValue, store));
+            // Tokenized text field - for indexing
+            document.add(new TextField(fieldName, textValue, Field.Store.NO));
+            // Store separately to support multi-valued fields
+            if (fieldType.isStored()) {
+                document.add(new StoredField(fieldName, textValue));
+            }
         } else if (fieldType.isIndexed() && !fieldType.isTokenized()) {
             // Non-tokenized string field (exact match)
-            document.add(new StringField(fieldName, textValue, store));
+            document.add(new StringField(fieldName, textValue, Field.Store.NO));
+            // Store separately to support multi-valued fields  
+            if (fieldType.isStored()) {
+                document.add(new StoredField(fieldName, textValue));
+            }
         } else if (fieldType.isStored()) {
             // Stored-only field
             document.add(new StoredField(fieldName, textValue));
@@ -79,49 +91,82 @@ public class LuceneProjectionContext extends ProjectionContext {
 
         // Add docValues for faceting/sorting if configured
         if (fieldType.hasDocValues()) {
-            addDocValuesField(fieldName, value, fieldType);
-        }
-
-        // Add facet field if configured with docValues
-        // Use the field name as dimension to avoid conflicts between multiple fields of same type
-        if (fieldType.hasDocValues() && !fieldType.isTokenized()) {
-            // Only add facets for non-tokenized fields (identifiers, dates, etc.)
-            // Use field name as dimension to avoid "dimension X is not multiValued" errors
-            document.add(new SortedSetDocValuesFacetField(fieldName, textValue));
+            addDocValuesField(fieldName, value, fieldType, isMultiValued);
+            // Note: Not adding SortedSetDocValuesFacetField as it conflicts with regular fields
+            // and requires FacetsConfig which we're avoiding. The SortedDocValuesField added
+            // by addDocValuesField is sufficient for faceting via SortedSetDocValuesReaderState.
         }
     }
 
     /**
      * Add appropriate DocValues field based on the value type.
+     * 
+     * @param fieldName The field name
+     * @param value The value
+     * @param fieldType The field type configuration
+     * @param isMultiValued Whether this field can have multiple values
      */
-    private void addDocValuesField(String fieldName, JsonNode value, LuceneFieldType fieldType) {
+    private void addDocValuesField(String fieldName, JsonNode value, LuceneFieldType fieldType, boolean isMultiValued) {
         String indexType = fieldType.getIndexType();
 
         if (indexType != null) {
             switch (indexType.toLowerCase()) {
                 case "long":
                     if (value.isNumber()) {
-                        document.add(new NumericDocValuesField(fieldName, value.asLong()));
+                        if (isMultiValued) {
+                            // Multi-valued numeric field
+                            document.add(new SortedNumericDocValuesField(fieldName, value.asLong()));
+                        } else {
+                            // Single-valued numeric field
+                            document.add(new NumericDocValuesField(fieldName, value.asLong()));
+                        }
                     }
                     break;
                 case "int":
                     if (value.isNumber()) {
-                        document.add(new NumericDocValuesField(fieldName, value.asInt()));
+                        if (isMultiValued) {
+                            // Multi-valued numeric field (store as long)
+                            document.add(new SortedNumericDocValuesField(fieldName, value.asInt()));
+                        } else {
+                            // Single-valued numeric field
+                            document.add(new NumericDocValuesField(fieldName, value.asInt()));
+                        }
                     }
                     break;
                 case "double":
                     if (value.isNumber()) {
-                        document.add(new DoubleDocValuesField(fieldName, value.asDouble()));
+                        if (isMultiValued) {
+                            // Multi-valued double field (encode as sortable long)
+                            document.add(new SortedNumericDocValuesField(fieldName, 
+                                Double.doubleToRawLongBits(value.asDouble())));
+                        } else {
+                            // Single-valued double field
+                            document.add(new DoubleDocValuesField(fieldName, value.asDouble()));
+                        }
                     }
                     break;
                 case "date":
                     if (value.isNumber()) {
-                        document.add(new NumericDocValuesField(fieldName, value.asLong()));
+                        if (isMultiValued) {
+                            // Multi-valued date field (timestamps as longs)
+                            document.add(new SortedNumericDocValuesField(fieldName, value.asLong()));
+                        } else {
+                            // Single-valued date field
+                            document.add(new NumericDocValuesField(fieldName, value.asLong()));
+                        }
                     }
                     break;
                 default:
                     // For text and other string types
-                    document.add(new SortedDocValuesField(fieldName, new org.apache.lucene.util.BytesRef(getTextValue(value))));
+                    if (isMultiValued) {
+                        // Multi-valued string field
+                        document.add(new SortedSetDocValuesField(fieldName, 
+                            new org.apache.lucene.util.BytesRef(getTextValue(value))));
+                    } else {
+                        // Single-valued string field
+                        document.add(new SortedDocValuesField(fieldName, 
+                            new org.apache.lucene.util.BytesRef(getTextValue(value))));
+                    }
                     break;
             }
         }

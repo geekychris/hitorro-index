@@ -48,7 +48,6 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
     private final IndexWriter indexWriter;
     private final IndexConfig config;
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
-    private final FacetsConfig facetsConfig;
     
     // Cache for execution builders per type
     private static final HashCache<Type, ExecutionBuilder> executionBuilderCache =
@@ -58,12 +57,6 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
         this.config = config;
         IndexWriterConfig writerConfig = config.createIndexWriterConfig();
         this.indexWriter = new IndexWriter(config.getDirectory(), writerConfig);
-        this.facetsConfig = new FacetsConfig();
-        
-        // Configure facets for multi-valued fields
-        facetsConfig.setMultiValued("identifier", true);
-        facetsConfig.setMultiValued("text", true);
-        facetsConfig.setMultiValued("textmarkup", true);
     }
 
     /**
@@ -77,9 +70,8 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
         
         lock.writeLock().lock();
         try {
-            // Build faceted document
-            Document facetedDoc = facetsConfig.build(doc);
-            indexWriter.addDocument(facetedDoc);
+            // Add document directly - SortedSetDocValuesFacetField handles faceting without FacetsConfig.build()
+            indexWriter.addDocument(doc);
             
             if (config.isAutoCommit()) {
                 // Auto-commit will be handled by periodic commit
@@ -100,7 +92,7 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
         
         for (JVS jvs : documents) {
             Document doc = projectToLuceneDocument(jvs);
-            luceneDocs.add(facetsConfig.build(doc));
+            luceneDocs.add(doc);
         }
         
         lock.writeLock().lock();
@@ -121,11 +113,10 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
      */
     public void updateDocument(String idField, String idValue, JVS jvs) throws IOException {
         Document doc = projectToLuceneDocument(jvs);
-        Document facetedDoc = facetsConfig.build(doc);
         
         lock.writeLock().lock();
         try {
-            indexWriter.updateDocument(new Term(idField, idValue), facetedDoc);
+            indexWriter.updateDocument(new Term(idField, idValue), doc);
         } finally {
             lock.writeLock().unlock();
         }
@@ -265,15 +256,6 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
      */
     public IndexWriter getIndexWriter() {
         return indexWriter;
-    }
-
-    /**
-     * Get the FacetsConfig.
-     *
-     * @return FacetsConfig instance
-     */
-    public FacetsConfig getFacetsConfig() {
-        return facetsConfig;
     }
 
     @Override

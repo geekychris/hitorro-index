@@ -95,7 +95,7 @@ public class IndexConfig {
      */
     public static class Builder {
         private Directory directory;
-        private Analyzer defaultAnalyzer = new StandardAnalyzer();
+        private Analyzer defaultAnalyzer = null; // Will be set to FieldPatternAnalyzerWrapper in build()
         private double ramBufferSizeMB = 16.0;
         private int maxBufferedDocs = -1;
         private boolean autoCommit = true;
@@ -198,6 +198,10 @@ public class IndexConfig {
         public IndexConfig build() throws IOException {
             if (directory == null) {
                 throw new IllegalStateException("Directory must be specified (use inMemory() or filesystem())");
+            }
+            // Use FieldPatternAnalyzerWrapper as default if no analyzer specified
+            if (defaultAnalyzer == null) {
+                defaultAnalyzer = new FieldPatternAnalyzerWrapper(new StandardAnalyzer());
             }
             return new IndexConfig(this);
         }

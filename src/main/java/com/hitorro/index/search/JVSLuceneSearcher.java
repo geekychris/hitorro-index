@@ -269,25 +269,36 @@ public class JVSLuceneSearcher implements AutoCloseable {
             // Add score
             jvs.set("_score", score);
             
-            // Add all stored fields
+            // Collect all field values (handling multi-valued fields)
+            // Key = original field path (with index type suffix stripped)
+            // Value = list of values
+            Map<String, List<String>> fieldValues = new HashMap<>();
+            
             for (org.apache.lucene.index.IndexableField field : doc.getFields()) {
                 String name = field.name();
                 String value = field.stringValue();
                 
                 if (value != null) {
-                    // Check if field already exists (multi-valued)
-                    try {
-                        Object existing = jvs.get(name);
-                        if (existing != null) {
-                            // Convert to array if not already
-                            // For simplicity, just keep first value for now
-                            continue;
-                        }
-                    } catch (Exception e) {
-                        // Field doesn't exist, add it
+                    // Strip index type suffixes like .text_en_s, .text_en_m, .identifier_s, .long_m, etc.
+                    String cleanPath = stripIndexTypeSuffix(name);
+                    fieldValues.computeIfAbsent(cleanPath, k -> new ArrayList<>()).add(value);
+                }
+            }
+            
+            // Add fields to JVS using proper path notation
+            for (Map.Entry<String, List<String>> entry : fieldValues.entrySet()) {
+                String fieldPath = entry.getKey();
+                List<String> values = entry.getValue();
+                
+                try {
+                    if (values.size() == 1) {
+                        jvs.set(fieldPath, values.get(0));
+                    } else {
+                        // Multi-valued field - set as array
+                        jvs.set(fieldPath, values);
                     }
-                    
-                    jvs.set(name, value);
+                } catch (Exception e) {
+                    // Field path may not be settable, skip it
                 }
             }
         } catch (Exception e) {
@@ -295,6 +306,28 @@ public class JVSLuceneSearcher implements AutoCloseable {
         }
         
         return jvs;
+    }
+    
+    /**
+     * Strip index type suffixes from field names.
+     * Examples:
+     *   title.mls.text_en_s -> title.mls
+     *   title.mls.segmented.text_en_m -> title.mls.segmented
+     *   brand.identifier_s -> brand
+     *   price.double_s -> price
+     */
+    private String stripIndexTypeSuffix(String fieldName) {
+        // Pattern: .{indexType}_{lang}_{s|m} or .{indexType}_{s|m}
+        // Index types: text, textmarkup, identifier, long, int, double, date, boolean
+        int lastDot = fieldName.lastIndexOf('.');
+        if (lastDot > 0) {
+            String lastPart = fieldName.substring(lastDot + 1);
+            // Check if it matches index type patterns
+            if (lastPart.matches("(text|textmarkup|identifier|long|int|double|date|boolean)(_[a-z]{2})?_[sm]")) {
+                return fieldName.substring(0, lastDot);
+            }
+        }
+        return fieldName;
     }
 
     /**

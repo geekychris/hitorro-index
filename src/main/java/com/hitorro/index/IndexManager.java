@@ -23,6 +23,8 @@ package com.hitorro.index;
 
 import com.hitorro.index.config.IndexConfig;
 import com.hitorro.index.indexer.JVSLuceneIndexWriter;
+import com.hitorro.index.search.EmbeddingSearchRequest;
+import com.hitorro.index.search.HybridSearchRequest;
 import com.hitorro.index.search.JVSLuceneSearcher;
 import com.hitorro.index.search.SearchResult;
 import com.hitorro.jsontypesystem.JVS;
@@ -358,6 +360,36 @@ public class IndexManager implements Closeable {
         if (handle != null) {
             handle.close();
         }
+    }
+    
+    /**
+     * Search by embedding vector (KNN/ANN).
+     * 
+     * @param indexName Index name
+     * @param request Embedding search request
+     * @return Search results with nearest neighbors
+     * @throws IOException if search fails
+     */
+    public SearchResult searchByEmbedding(String indexName, EmbeddingSearchRequest request) throws IOException {
+        IndexHandle handle = getRequiredIndex(indexName);
+        handle.refreshSearcher();
+        return handle.getSearcher().searchByEmbedding(request);
+    }
+    
+    /**
+     * Hybrid search combining text and vector search.
+     * 
+     * @param indexName Index name
+     * @param request Hybrid search request
+     * @return Merged search results from text and vector search
+     * @throws IOException if search fails
+     * @throws ParseException if query parsing fails
+     */
+    public SearchResult searchHybrid(String indexName, HybridSearchRequest request) 
+            throws IOException, ParseException {
+        IndexHandle handle = getRequiredIndex(indexName);
+        handle.refreshSearcher();
+        return handle.getSearcher().searchHybrid(request);
     }
     
     /**

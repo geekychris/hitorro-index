@@ -21,6 +21,7 @@
  */
 package com.hitorro.index.config;
 
+import com.hitorro.index.embeddings.EmbeddingConfig;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.index.IndexWriterConfig;
@@ -42,6 +43,7 @@ public class IndexConfig {
     private final int maxBufferedDocs;
     private final boolean autoCommit;
     private final int commitIntervalSeconds;
+    private final EmbeddingConfig embeddingConfig;
 
     private IndexConfig(Builder builder) throws IOException {
         this.directory = builder.directory;
@@ -50,6 +52,7 @@ public class IndexConfig {
         this.maxBufferedDocs = builder.maxBufferedDocs;
         this.autoCommit = builder.autoCommit;
         this.commitIntervalSeconds = builder.commitIntervalSeconds;
+        this.embeddingConfig = builder.embeddingConfig;
     }
 
     public Directory getDirectory() {
@@ -74,6 +77,20 @@ public class IndexConfig {
 
     public int getCommitIntervalSeconds() {
         return commitIntervalSeconds;
+    }
+    
+    /**
+     * Get embedding configuration, or null if embeddings are not enabled.
+     */
+    public EmbeddingConfig getEmbeddingConfig() {
+        return embeddingConfig;
+    }
+    
+    /**
+     * Check if embedding support is configured and enabled.
+     */
+    public boolean hasEmbeddings() {
+        return embeddingConfig != null && embeddingConfig.isEnabled();
     }
 
     /**
@@ -100,6 +117,7 @@ public class IndexConfig {
         private int maxBufferedDocs = -1;
         private boolean autoCommit = true;
         private int commitIntervalSeconds = 60;
+        private EmbeddingConfig embeddingConfig = null;
 
         /**
          * Use in-memory storage (RAMDirectory).
@@ -186,6 +204,17 @@ public class IndexConfig {
          */
         public Builder commitInterval(int seconds) {
             this.commitIntervalSeconds = seconds;
+            return this;
+        }
+        
+        /**
+         * Configure embedding/vector search support.
+         * Pass null to disable embeddings (default).
+         *
+         * @param embeddingConfig Embedding configuration
+         */
+        public Builder embeddings(EmbeddingConfig embeddingConfig) {
+            this.embeddingConfig = embeddingConfig;
             return this;
         }
 

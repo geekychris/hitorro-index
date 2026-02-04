@@ -21,7 +21,10 @@
  */
 package com.hitorro.index.indexer;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.hitorro.index.config.IndexConfig;
+import com.hitorro.index.embeddings.EmbeddingConfig;
+import com.hitorro.index.embeddings.EmbeddingFieldType;
 import com.hitorro.jsontypesystem.JVS;
 import com.hitorro.jsontypesystem.Type;
 import com.hitorro.jsontypesystem.executors.ExecutionBuilder;
@@ -30,10 +33,14 @@ import com.hitorro.util.core.events.cache.HashCache;
 import com.hitorro.util.json.keys.propaccess.Propaccess;
 import com.hitorro.util.json.keys.propaccess.PropaccessError;
 import org.apache.lucene.document.Document;
+import org.apache.lucene.document.KnnFloatVectorField;
+import org.apache.lucene.document.KnnByteVectorField;
 import org.apache.lucene.facet.FacetsConfig;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.Term;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -45,6 +52,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * Converts JVS documents to Lucene Documents using the ExecutionBuilder projection mechanism.
  */
 public class JVSLuceneIndexWriter implements AutoCloseable {
+    private static final Logger logger = LoggerFactory.getLogger(JVSLuceneIndexWriter.class);
+    
     private final IndexWriter indexWriter;
     private final IndexConfig config;
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
@@ -68,7 +77,20 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
      * @throws IOException if indexing fails
      */
     public void indexDocument(JVS jvs) throws IOException {
-        Document doc = projectToLuceneDocument(jvs);
+        indexDocument(jvs, null);
+    }
+    
+    /**
+     * Index a single JVS document with an out-of-band embedding vector.
+     * The embedding is added to the Lucene Document without modifying the JVS JSON.
+     * If the document has an id.did field, it will replace any existing document with the same ID.
+     *
+     * @param jvs The JVS document to index
+     * @param embedding Optional out-of-band embedding vector (null if not provided)
+     * @throws IOException if indexing fails
+     */
+    public void indexDocument(JVS jvs, float[] embedding) throws IOException {
+        Document doc = projectToLuceneDocument(jvs, embedding);
         
         lock.writeLock().lock();
         try {
@@ -108,24 +130,42 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
             // Try id.did first (most common pattern)
             Object idObj = jvs.get("id.did");
             if (idObj != null) {
-                return idObj.toString();
+                return extractStringValue(idObj);
             }
             
             // Try id.id (combined format like "sysobject:doc001")
             idObj = jvs.get("id.id");
             if (idObj != null) {
-                return idObj.toString();
+                return extractStringValue(idObj);
             }
             
             // Try simple id field
             idObj = jvs.get("id");
-            if (idObj != null && idObj instanceof String) {
-                return idObj.toString();
+            if (idObj != null) {
+                return extractStringValue(idObj);
             }
         } catch (Exception e) {
             // ID not found or error accessing it
         }
         return null;
+    }
+    
+    /**
+     * Extract string value from various object types.
+     * Handles JsonNode properly to avoid extra quotes.
+     */
+    private String extractStringValue(Object obj) {
+        if (obj instanceof JsonNode) {
+            JsonNode node = (JsonNode) obj;
+            if (node.isTextual()) {
+                return node.asText();
+            }
+            return node.asText();
+        }
+        if (obj instanceof String) {
+            return (String) obj;
+        }
+        return obj.toString();
     }
 
     /**
@@ -241,33 +281,244 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
     /**
      * Project a JVS document to a Lucene Document using the ExecutionBuilder mechanism.
      * If JVS has no type, creates a simple document with all fields as text.
+     * Also handles optional embedding fields if configured.
      *
      * @param jvs The JVS document
      * @return Lucene Document
      */
     private Document projectToLuceneDocument(JVS jvs) {
+        return projectToLuceneDocument(jvs, null);
+    }
+    
+    /**
+     * Project a JVS document to a Lucene Document with optional out-of-band embedding.
+     * If JVS has no type, creates a simple document with all fields as text.
+     * Also handles optional embedding fields if configured.
+     *
+     * @param jvs The JVS document
+     * @param outOfBandEmbedding Optional embedding vector to add (takes precedence over in-JSON embedding)
+     * @return Lucene Document
+     */
+    private Document projectToLuceneDocument(JVS jvs, float[] outOfBandEmbedding) {
         Type type = jvs.getType();
+        Document doc;
         
         if (type == null) {
             // No type - create simple document with all fields as text
-            return createSimpleDocument(jvs);
+            doc = createSimpleDocument(jvs);
+        } else {
+            // Get or create execution builder for this type
+            ExecutionBuilder builder = executionBuilderCache.get(type);
+            
+            // Create projection context
+            LuceneProjectionContext context = new LuceneProjectionContext(jvs);
+            
+            // Execute projection
+            ExecutionNode root = builder.getExecutor();
+            try {
+                root.project(context);
+            } catch (PropaccessError e) {
+                throw new RuntimeException("Failed to project JVS to Lucene document", e);
+            }
+            
+            doc = context.getDocument();
         }
-
-        // Get or create execution builder for this type
-        ExecutionBuilder builder = executionBuilderCache.get(type);
         
-        // Create projection context
-        LuceneProjectionContext context = new LuceneProjectionContext(jvs);
+        // Add embedding field if configured
+        if (config.hasEmbeddings()) {
+            if (outOfBandEmbedding != null) {
+                // Use out-of-band embedding (takes precedence)
+                addOutOfBandEmbeddingField(doc, outOfBandEmbedding);
+            } else {
+                // Try to extract from JVS JSON
+                addEmbeddingField(doc, jvs);
+            }
+        }
         
-        // Execute projection
-        ExecutionNode root = builder.getExecutor();
+        return doc;
+    }
+    
+    /**
+     * Add out-of-band embedding directly to Lucene document.
+     * This bypasses the JVS JSON extraction and adds the embedding vector directly.
+     *
+     * @param doc The Lucene document
+     * @param embedding The embedding vector
+     */
+    private void addOutOfBandEmbeddingField(Document doc, float[] embedding) {
+        if (embedding == null) {
+            return;
+        }
+        
+        EmbeddingConfig embeddingConfig = config.getEmbeddingConfig();
+        String fieldName = embeddingConfig.getFieldName();
+        
+        // Validate dimension
+        if (embedding.length != embeddingConfig.getDimension()) {
+            logger.warn("Out-of-band embedding dimension mismatch: expected {}, got {}. Skipping embedding.",
+                       embeddingConfig.getDimension(), embedding.length);
+            return;
+        }
+        
         try {
-            root.project(context);
-        } catch (PropaccessError e) {
-            throw new RuntimeException("Failed to project JVS to Lucene document", e);
+            // Add appropriate vector field based on configuration
+            if (embeddingConfig.getFieldType() == EmbeddingFieldType.FLOAT_VECTOR) {
+                KnnFloatVectorField vectorField = new KnnFloatVectorField(
+                    fieldName,
+                    embedding,
+                    embeddingConfig.getSimilarity().toLuceneFunction()
+                );
+                doc.add(vectorField);
+                logger.debug("Added out-of-band FLOAT_VECTOR embedding '{}' with dimension {}",
+                            fieldName, embedding.length);
+            } else if (embeddingConfig.getFieldType() == EmbeddingFieldType.BYTE_VECTOR) {
+                byte[] byteVector = quantizeToBytes(embedding);
+                KnnByteVectorField vectorField = new KnnByteVectorField(
+                    fieldName,
+                    byteVector,
+                    embeddingConfig.getSimilarity().toLuceneFunction()
+                );
+                doc.add(vectorField);
+                logger.debug("Added out-of-band BYTE_VECTOR embedding '{}' with dimension {}",
+                            fieldName, embedding.length);
+            }
+        } catch (Exception e) {
+            logger.warn("Error adding out-of-band embedding: {}", e.getMessage());
+        }
+    }
+    
+    /**
+     * Extract and add embedding field to Lucene document if present in JVS.
+     */
+    private void addEmbeddingField(Document doc, JVS jvs) {
+        EmbeddingConfig embeddingConfig = config.getEmbeddingConfig();
+        String fieldName = embeddingConfig.getFieldName();
+        
+        try {
+            // Try to get embedding from JVS
+            Object embeddingObj = jvs.get(fieldName);
+            if (embeddingObj == null) {
+                // No embedding field present - this is OK, embeddings are optional
+                return;
+            }
+            
+            // Convert to float array
+            float[] vector = extractVectorFromObject(embeddingObj);
+            if (vector == null) {
+                logger.warn("Could not extract embedding vector from field '{}', invalid type: {}", 
+                           fieldName, embeddingObj.getClass().getSimpleName());
+                return;
+            }
+            
+            // Validate dimension
+            if (vector.length != embeddingConfig.getDimension()) {
+                logger.warn("Embedding dimension mismatch: expected {}, got {}. Skipping embedding for this document.",
+                           embeddingConfig.getDimension(), vector.length);
+                return;
+            }
+            
+            // Add appropriate vector field based on configuration
+            if (embeddingConfig.getFieldType() == EmbeddingFieldType.FLOAT_VECTOR) {
+                // Use KnnFloatVectorField for 32-bit floats
+                // In Lucene 9.12, similarity function is specified separately via FieldType
+                KnnFloatVectorField vectorField = new KnnFloatVectorField(
+                    fieldName,
+                    vector,
+                    embeddingConfig.getSimilarity().toLuceneFunction()
+                );
+                doc.add(vectorField);
+            } else if (embeddingConfig.getFieldType() == EmbeddingFieldType.BYTE_VECTOR) {
+                // Convert to byte vector (quantize)
+                byte[] byteVector = quantizeToBytes(vector);
+                KnnByteVectorField vectorField = new KnnByteVectorField(
+                    fieldName,
+                    byteVector,
+                    embeddingConfig.getSimilarity().toLuceneFunction()
+                );
+                doc.add(vectorField);
+            }
+            
+            logger.debug("Added {} embedding field '{}' with dimension {}",
+                        embeddingConfig.getFieldType(), fieldName, vector.length);
+            
+        } catch (Exception e) {
+            logger.warn("Error extracting embedding from field '{}': {}", fieldName, e.getMessage());
+            // Continue without embedding - don't fail the entire document
+        }
+    }
+    
+    /**
+     * Extract float vector from various possible object types.
+     * Supports: float[], double[], List<Number>, JsonNode array.
+     */
+    private float[] extractVectorFromObject(Object obj) {
+        if (obj == null) {
+            return null;
         }
         
-        return context.getDocument();
+        // Direct float array
+        if (obj instanceof float[]) {
+            return (float[]) obj;
+        }
+        
+        // Double array - convert to float
+        if (obj instanceof double[]) {
+            double[] doubles = (double[]) obj;
+            float[] floats = new float[doubles.length];
+            for (int i = 0; i < doubles.length; i++) {
+                floats[i] = (float) doubles[i];
+            }
+            return floats;
+        }
+        
+        // List of numbers
+        if (obj instanceof List) {
+            List<?> list = (List<?>) obj;
+            float[] floats = new float[list.size()];
+            for (int i = 0; i < list.size(); i++) {
+                Object item = list.get(i);
+                if (item instanceof Number) {
+                    floats[i] = ((Number) item).floatValue();
+                } else {
+                    return null; // Invalid list element
+                }
+            }
+            return floats;
+        }
+        
+        // Jackson JsonNode array
+        if (obj instanceof JsonNode) {
+            JsonNode node = (JsonNode) obj;
+            if (node.isArray()) {
+                float[] floats = new float[node.size()];
+                for (int i = 0; i < node.size(); i++) {
+                    JsonNode element = node.get(i);
+                    if (element.isNumber()) {
+                        floats[i] = (float) element.asDouble();
+                    } else {
+                        return null; // Invalid array element
+                    }
+                }
+                return floats;
+            }
+        }
+        
+        return null; // Unsupported type
+    }
+    
+    /**
+     * Quantize float vector to byte vector.
+     * Maps float range [-1, 1] to byte range [-128, 127].
+     * Values outside [-1, 1] are clamped.
+     */
+    private byte[] quantizeToBytes(float[] vector) {
+        byte[] byteVector = new byte[vector.length];
+        for (int i = 0; i < vector.length; i++) {
+            // Clamp to [-1, 1] and scale to [-128, 127]
+            float clamped = Math.max(-1.0f, Math.min(1.0f, vector[i]));
+            byteVector[i] = (byte) Math.round(clamped * 127.0f);
+        }
+        return byteVector;
     }
     
     /**

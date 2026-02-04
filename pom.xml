@@ -19,7 +19,7 @@
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
         <hitorro.version>3.0.0</hitorro.version>
-        <lucene.version>9.11.1</lucene.version>
+        <lucene.version>9.12.0</lucene.version>
         <reactor.version>3.6.11</reactor.version>
         <jackson.version>2.18.2</jackson.version>
     </properties>

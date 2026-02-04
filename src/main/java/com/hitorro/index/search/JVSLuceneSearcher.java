@@ -24,6 +24,7 @@ package com.hitorro.index.search;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.hitorro.index.config.IndexConfig;
+import com.hitorro.index.embeddings.EmbeddingConfig;
 import com.hitorro.index.query.JVSQueryParser;
 import com.hitorro.jsontypesystem.JVS;
 import com.hitorro.jsontypesystem.Type;
@@ -38,17 +39,23 @@ import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.search.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.io.IOException;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
 
 /**
  * Main search API for JVS documents in Lucene indexes.
  * Supports basic search, fielded search, and faceting with streaming results.
  */
 public class JVSLuceneSearcher implements AutoCloseable {
+    private static final Logger logger = LoggerFactory.getLogger(JVSLuceneSearcher.class);
+    
     private final IndexConfig config;
     private final IndexReader reader;
     private final IndexSearcher searcher;
@@ -210,6 +217,370 @@ public class JVSLuceneSearcher implements AutoCloseable {
      */
     public Flux<JVS> searchStream(String queryString, int offset, int limit) {
         return Mono.fromCallable(() -> search(queryString, offset, limit))
+                .flatMapMany(result -> Flux.fromIterable(result.getDocuments()));
+    }
+    
+    /**
+     * Search by embedding vector (KNN/ANN search).
+     *
+     * @param request Embedding search request
+     * @return SearchResult with nearest neighbors
+     * @throws IOException if search fails
+     */
+    public SearchResult searchByEmbedding(EmbeddingSearchRequest request) throws IOException {
+        if (!config.hasEmbeddings()) {
+            throw new IllegalStateException("Embedding search not supported - index not configured with embeddings");
+        }
+        
+        EmbeddingConfig embeddingConfig = config.getEmbeddingConfig();
+        String fieldName = embeddingConfig.getFieldName();
+        
+        long startTime = System.currentTimeMillis();
+        
+        // Create KNN query based on index configuration
+        Query knnQuery;
+        if (embeddingConfig.getFieldType() == com.hitorro.index.embeddings.EmbeddingFieldType.BYTE_VECTOR) {
+            // Index uses byte vectors - convert float query if needed
+            byte[] queryBytes;
+            if (request.isFloatVector()) {
+                queryBytes = quantizeToBytes(request.getQueryVector());
+            } else {
+                queryBytes = request.getQueryByteVector();
+            }
+            knnQuery = new org.apache.lucene.search.KnnByteVectorQuery(
+                    fieldName, 
+                    queryBytes, 
+                    request.getK(), 
+                    request.getFilter()
+            );
+        } else {
+            // Index uses float vectors
+            if (!request.isFloatVector()) {
+                throw new IllegalArgumentException("Index uses FLOAT_VECTOR but query provided BYTE_VECTOR");
+            }
+            knnQuery = new org.apache.lucene.search.KnnFloatVectorQuery(
+                    fieldName, 
+                    request.getQueryVector(), 
+                    request.getK(), 
+                    request.getFilter()
+            );
+        }
+        
+        // Execute KNN search
+        TopDocs topDocs = searcher.search(knnQuery, request.getK());
+        long totalHits = topDocs.totalHits.value;
+        
+        // Collect documents
+        List<JVS> documents = new ArrayList<>();
+        ScoreDoc[] hits = topDocs.scoreDocs;
+        
+        for (int i = 0; i < hits.length; i++) {
+            Document doc = searcher.storedFields().document(hits[i].doc);
+            JVS jvs = convertDocumentToJVS(doc, hits[i].score);
+            
+            // Add similarity score if requested
+            if (request.isIncludeScores()) {
+                try {
+                    jvs.set("_similarity", hits[i].score);
+                } catch (Exception e) {
+                    logger.warn("Could not set similarity score", e);
+                }
+            }
+            
+            documents.add(jvs);
+        }
+        
+        long searchTime = System.currentTimeMillis() - startTime;
+        
+        return SearchResult.builder()
+                .documents(documents)
+                .totalHits(totalHits)
+                .query("vector[" + (request.isFloatVector() ? request.getQueryVector().length : request.getQueryByteVector().length) + "]")
+                .offset(0)
+                .limit(request.getK())
+                .searchTimeMs(searchTime)
+                .build();
+    }
+    
+    /**
+     * Hybrid search combining text and vector search.
+     *
+     * @param request Hybrid search request
+     * @return SearchResult with merged results from text and vector search
+     * @throws IOException if search fails
+     * @throws ParseException if query parsing fails
+     */
+    public SearchResult searchHybrid(HybridSearchRequest request) throws IOException, ParseException {
+        if (!config.hasEmbeddings()) {
+            throw new IllegalStateException("Hybrid search not supported - index not configured with embeddings");
+        }
+        
+        long startTime = System.currentTimeMillis();
+        
+        // Execute text search
+        SearchResult textResult = search(request.getTextQuery(), 0, request.getK());
+        
+        // Execute vector search
+        EmbeddingSearchRequest.Builder embeddingRequestBuilder = EmbeddingSearchRequest.builder()
+                .k(request.getK())
+                .includeScores(true);
+        
+        if (request.isFloatVector()) {
+            embeddingRequestBuilder.queryVector(request.getQueryVector());
+        } else {
+            embeddingRequestBuilder.queryByteVector(request.getQueryByteVector());
+        }
+        
+        SearchResult vectorResult = searchByEmbedding(embeddingRequestBuilder.build());
+        
+        // Merge results based on strategy
+        List<JVS> mergedDocuments;
+        long totalHits;
+        
+        switch (request.getStrategy()) {
+            case MERGE_MAX_SCORE:
+                mergedDocuments = mergeByMaxScore(textResult.getDocuments(), vectorResult.getDocuments());
+                totalHits = Math.max(textResult.getTotalHits(), vectorResult.getTotalHits());
+                break;
+            
+            case MERGE_SUM_SCORE:
+                mergedDocuments = mergeByWeightedSum(textResult.getDocuments(), vectorResult.getDocuments(), request.getAlpha());
+                totalHits = Math.max(textResult.getTotalHits(), vectorResult.getTotalHits());
+                break;
+            
+            case RERANK_RRF:
+            default:
+                mergedDocuments = mergeByRRF(textResult.getDocuments(), vectorResult.getDocuments());
+                totalHits = Math.max(textResult.getTotalHits(), vectorResult.getTotalHits());
+                break;
+        }
+        
+        long searchTime = System.currentTimeMillis() - startTime;
+        
+        return SearchResult.builder()
+                .documents(mergedDocuments)
+                .totalHits(totalHits)
+                .query("hybrid: text=\"" + request.getTextQuery() + "\" + vector[" + 
+                       (request.isFloatVector() ? request.getQueryVector().length : request.getQueryByteVector().length) + "]")
+                .offset(0)
+                .limit(request.getK())
+                .searchTimeMs(searchTime)
+                .build();
+    }
+    
+    /**
+     * Merge results by taking maximum score per document.
+     */
+    private List<JVS> mergeByMaxScore(List<JVS> textDocs, List<JVS> vectorDocs) {
+        Map<String, JVS> docMap = new HashMap<>();
+        Map<String, Float> scoreMap = new HashMap<>();
+        
+        // Add text search results
+        for (JVS doc : textDocs) {
+            String docId = extractDocId(doc);
+            float score = extractScore(doc);
+            docMap.put(docId, doc);
+            scoreMap.put(docId, score);
+        }
+        
+        // Merge with vector search results (take max score)
+        for (JVS doc : vectorDocs) {
+            String docId = extractDocId(doc);
+            float score = extractScore(doc);
+            
+            if (!docMap.containsKey(docId) || score > scoreMap.get(docId)) {
+                docMap.put(docId, doc);
+                scoreMap.put(docId, score);
+            }
+        }
+        
+        // Sort by score descending
+        return docMap.values().stream()
+                .sorted((a, b) -> Float.compare(scoreMap.get(extractDocId(b)), scoreMap.get(extractDocId(a))))
+                .collect(Collectors.toList());
+    }
+    
+    /**
+     * Merge results by weighted sum of normalized scores.
+     */
+    private List<JVS> mergeByWeightedSum(List<JVS> textDocs, List<JVS> vectorDocs, double alpha) {
+        // Normalize scores for each result set
+        Map<String, Float> textScores = normalizeScores(textDocs);
+        Map<String, Float> vectorScores = normalizeScores(vectorDocs);
+        
+        // Combine all unique document IDs
+        Set<String> allDocIds = new HashSet<>();
+        Map<String, JVS> docMap = new HashMap<>();
+        
+        for (JVS doc : textDocs) {
+            String docId = extractDocId(doc);
+            allDocIds.add(docId);
+            docMap.put(docId, doc);
+        }
+        
+        for (JVS doc : vectorDocs) {
+            String docId = extractDocId(doc);
+            allDocIds.add(docId);
+            if (!docMap.containsKey(docId)) {
+                docMap.put(docId, doc);
+            }
+        }
+        
+        // Calculate weighted scores
+        Map<String, Float> finalScores = new HashMap<>();
+        for (String docId : allDocIds) {
+            float textScore = textScores.getOrDefault(docId, 0.0f);
+            float vectorScore = vectorScores.getOrDefault(docId, 0.0f);
+            float combinedScore = (float) (alpha * textScore + (1.0 - alpha) * vectorScore);
+            finalScores.put(docId, combinedScore);
+        }
+        
+        // Sort by combined score descending
+        return docMap.values().stream()
+                .sorted((a, b) -> Float.compare(finalScores.get(extractDocId(b)), finalScores.get(extractDocId(a))))
+                .collect(Collectors.toList());
+    }
+    
+    /**
+     * Merge results using Reciprocal Rank Fusion (RRF).
+     */
+    private List<JVS> mergeByRRF(List<JVS> textDocs, List<JVS> vectorDocs) {
+        final int K = 60; // RRF constant
+        
+        Map<String, JVS> docMap = new HashMap<>();
+        Map<String, Float> rrfScores = new HashMap<>();
+        
+        // Add text search results with RRF scoring
+        for (int i = 0; i < textDocs.size(); i++) {
+            JVS doc = textDocs.get(i);
+            String docId = extractDocId(doc);
+            float rrfScore = 1.0f / (K + i + 1); // rank starts at 0
+            
+            docMap.put(docId, doc);
+            rrfScores.put(docId, rrfScore);
+        }
+        
+        // Add vector search results with RRF scoring
+        for (int i = 0; i < vectorDocs.size(); i++) {
+            JVS doc = vectorDocs.get(i);
+            String docId = extractDocId(doc);
+            float rrfScore = 1.0f / (K + i + 1);
+            
+            if (!docMap.containsKey(docId)) {
+                docMap.put(docId, doc);
+                rrfScores.put(docId, rrfScore);
+            } else {
+                // Add to existing RRF score
+                rrfScores.put(docId, rrfScores.get(docId) + rrfScore);
+            }
+        }
+        
+        // Sort by RRF score descending
+        return docMap.values().stream()
+                .sorted((a, b) -> Float.compare(rrfScores.get(extractDocId(b)), rrfScores.get(extractDocId(a))))
+                .collect(Collectors.toList());
+    }
+    
+    /**
+     * Normalize scores to [0, 1] range using min-max normalization.
+     */
+    private Map<String, Float> normalizeScores(List<JVS> docs) {
+        if (docs.isEmpty()) {
+            return new HashMap<>();
+        }
+        
+        // Find min and max scores
+        float minScore = Float.MAX_VALUE;
+        float maxScore = Float.MIN_VALUE;
+        
+        Map<String, Float> scores = new HashMap<>();
+        for (JVS doc : docs) {
+            String docId = extractDocId(doc);
+            float score = extractScore(doc);
+            scores.put(docId, score);
+            minScore = Math.min(minScore, score);
+            maxScore = Math.max(maxScore, score);
+        }
+        
+        // Normalize to [0, 1]
+        Map<String, Float> normalized = new HashMap<>();
+        float range = maxScore - minScore;
+        
+        for (Map.Entry<String, Float> entry : scores.entrySet()) {
+            float normalizedScore = range > 0 ? (entry.getValue() - minScore) / range : 1.0f;
+            normalized.put(entry.getKey(), normalizedScore);
+        }
+        
+        return normalized;
+    }
+    
+    /**
+     * Extract document ID from JVS.
+     * Tries _uid, id.did, id fields.
+     */
+    private String extractDocId(JVS doc) {
+        try {
+            Object uid = doc.get("_uid");
+            if (uid != null) return uid.toString();
+            
+            Object did = doc.get("id.did");
+            if (did != null) return did.toString();
+            
+            Object id = doc.get("id");
+            if (id != null) return id.toString();
+        } catch (Exception e) {
+            // Fall through
+        }
+        
+        // Use hash code as last resort
+        return String.valueOf(doc.hashCode());
+    }
+    
+    /**
+     * Extract score from JVS document.
+     * Tries _score, _similarity fields.
+     */
+    private float extractScore(JVS doc) {
+        try {
+            Object score = doc.get("_score");
+            if (score instanceof Number) {
+                return ((Number) score).floatValue();
+            }
+            
+            Object similarity = doc.get("_similarity");
+            if (similarity instanceof Number) {
+                return ((Number) similarity).floatValue();
+            }
+        } catch (Exception e) {
+            // Fall through
+        }
+        
+        return 0.0f;
+    }
+    
+    /**
+     * Quantize float vector to byte vector.
+     * Maps float range [-1, 1] to byte range [-128, 127].
+     * Values outside [-1, 1] are clamped.
+     */
+    private byte[] quantizeToBytes(float[] vector) {
+        byte[] byteVector = new byte[vector.length];
+        for (int i = 0; i < vector.length; i++) {
+            // Clamp to [-1, 1] and scale to [-128, 127]
+            float clamped = Math.max(-1.0f, Math.min(1.0f, vector[i]));
+            byteVector[i] = (byte) Math.round(clamped * 127.0f);
+        }
+        return byteVector;
+    }
+    
+    /**
+     * Stream embedding search results as Flux.
+     *
+     * @param request Embedding search request
+     * @return Flux of JVS documents
+     */
+    public Flux<JVS> searchByEmbeddingStream(EmbeddingSearchRequest request) {
+        return Mono.fromCallable(() -> searchByEmbedding(request))
                 .flatMapMany(result -> Flux.fromIterable(result.getDocuments()));
     }
 

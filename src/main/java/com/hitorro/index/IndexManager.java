@@ -211,11 +211,27 @@ public class IndexManager implements Closeable {
      * @throws IOException if search fails
      * @throws ParseException if query parsing fails
      */
-    public SearchResult search(String indexName, String queryString, int offset, int limit, 
+    public SearchResult search(String indexName, String queryString, int offset, int limit,
                                List<String> facetDims) throws IOException, ParseException {
+        return search(indexName, queryString, offset, limit, facetDims, null);
+    }
+
+    /**
+     * Search within a single index with an explicit language override.
+     *
+     * @param indexName Index name
+     * @param queryString Lucene query string
+     * @param offset Starting offset
+     * @param limit Maximum number of results
+     * @param facetDims Facet dimensions (optional)
+     * @param lang Optional ISO 639-1 language code; if null/empty, the
+     *             IndexManager's default language is used.
+     */
+    public SearchResult search(String indexName, String queryString, int offset, int limit,
+                               List<String> facetDims, String lang) throws IOException, ParseException {
         IndexHandle handle = getRequiredIndex(indexName);
         handle.refreshSearcher();
-        return handle.getSearcher().search(queryString, offset, limit, facetDims);
+        return handle.getSearcher().search(queryString, offset, limit, facetDims, lang);
     }
     
     /**
@@ -230,15 +246,27 @@ public class IndexManager implements Closeable {
      * @throws IOException if search fails
      * @throws ParseException if query parsing fails
      */
-    public SearchResult searchMultiple(List<String> indexNames, String queryString, 
+    public SearchResult searchMultiple(List<String> indexNames, String queryString,
                                        int offset, int limit) throws IOException, ParseException {
+        return searchMultiple(indexNames, queryString, offset, limit, null);
+    }
+
+    /**
+     * Search across multiple indexes with an explicit language
+     * override. The language is used by the shared query parser that
+     * resolves field names.
+     */
+    public SearchResult searchMultiple(List<String> indexNames, String queryString,
+                                       int offset, int limit, String lang) throws IOException, ParseException {
         if (indexNames == null || indexNames.isEmpty()) {
             throw new IllegalArgumentException("Must specify at least one index to search");
         }
+
+        String effectiveLang = (lang != null && !lang.isEmpty()) ? lang : defaultLang;
         
         // Single index - use regular search
         if (indexNames.size() == 1) {
-            return search(indexNames.get(0), queryString, offset, limit, null);
+            return search(indexNames.get(0), queryString, offset, limit, null, effectiveLang);
         }
         
         // Multiple indexes - use MultiReader
@@ -268,7 +296,7 @@ public class IndexManager implements Closeable {
                 null, // type not needed for cross-index search
                 "content",
                 firstHandle.config.getDefaultAnalyzer(),
-                defaultLang
+                effectiveLang
             ).parse(queryString);
             
             // Execute search

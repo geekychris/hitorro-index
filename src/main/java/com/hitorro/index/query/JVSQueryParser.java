@@ -69,18 +69,29 @@ public class JVSQueryParser extends QueryParser {
     protected Query getFieldQuery(String field, String queryText, boolean quoted) throws org.apache.lucene.queryparser.classic.ParseException {
         // Resolve the field path to actual indexed field name(s)
         String resolvedField = resolveFieldName(field);
-        
-        // Get appropriate analyzer for this field
+
+        // NOTE: We currently compute the field-specific analyzer but
+        // Lucene's QueryParser uses the analyzer passed to the
+        // constructor. We keep this call for future extension and
+        // for symmetry with field resolution, but the returned
+        // analyzer is not wired into parsing yet.
         Analyzer fieldAnalyzer = getAnalyzerForField(field);
-        
+
         return super.getFieldQuery(resolvedField, queryText, quoted);
     }
 
     /**
      * Resolve a JVS field path to the actual indexed field name.
-     * For example, "title.mls" might resolve to "title.mls.text_en_s"
+     * For example, "title.mls" might resolve to "title.mls.text_en_s".
      *
-     * @param fieldPath The JVS field path (potentially with dots)
+     * This method also supports:
+     * - Explicit indexing methods as a trailing segment, e.g.
+     *   "title.mls.clean.text" → method "text" on field "title.mls.clean".
+     * - Direct use of physical Lucene field names like
+     *   "title.mls.clean.text_en_m", which are returned unchanged
+     *   for backward compatibility.
+     *
+     * @param fieldPath The JVS field path or physical field name
      * @return The resolved Lucene field name
      */
     private String resolveFieldName(String fieldPath) {
@@ -89,40 +100,25 @@ public class JVSQueryParser extends QueryParser {
         }
 
         try {
-            // Parse the field path
-            Propaccess access = new Propaccess(fieldPath);
-            
-            // Get the field from the type system
-            Field field = type.getField(access);
-            if (field == null) {
-                // Field not found in type system, use as-is
+            // If this already looks like a concrete Lucene field name
+            // (e.g. *.text_en_s), preserve it as-is for backwards compatibility.
+            if (isPhysicalFieldName(fieldPath)) {
                 return fieldPath;
             }
 
-            // Get the default group for indexing
-            Group group = type.getDefaultGroupFor(access, "index");
-            if (group == null) {
-                // No index group, use as-is
+            ResolvedField resolved = resolveField(fieldPath);
+            if (resolved == null) {
+                // Field not found in type system or no index group; use as-is
                 return fieldPath;
             }
 
-            // Get the field type configuration
-            String method = group.getMethod();
-            LuceneFieldType lft = fieldTypes.get(method);
-            if (lft == null) {
-                return fieldPath;
-            }
-
-            // Determine if multi-valued
-            boolean isMulti = type.isMultiValuedPath(access);
-            
-            // Build the indexed field name
+            // Build the indexed field name from the base JSON path and
+            // the LuceneFieldType suffix using the effective language.
             StringBuilder sb = new StringBuilder();
-            access.getPathSansIndex(sb);
-            lft.get(sb, defaultLang, isMulti);
-            
+            resolved.baseAccess.getPathSansIndex(sb);
+            resolved.lft.get(sb, resolved.lang, resolved.multiValued);
             return sb.toString();
-            
+
         } catch (Exception e) {
             // If resolution fails, use the field path as-is
             return fieldPath;
@@ -131,6 +127,8 @@ public class JVSQueryParser extends QueryParser {
 
     /**
      * Get the appropriate analyzer for a field based on the type system.
+     * Uses the same resolution logic as resolveFieldName so that
+     * method overrides (e.g. ".text") are treated consistently.
      */
     private Analyzer getAnalyzerForField(String fieldPath) {
         if (type == null || fieldPath == null) {
@@ -138,24 +136,135 @@ public class JVSQueryParser extends QueryParser {
         }
 
         try {
-            Propaccess access = new Propaccess(fieldPath);
-            Field field = type.getField(access);
-            
-            if (field != null) {
-                Group group = type.getDefaultGroupFor(access, "index");
-                if (group != null) {
-                    String method = group.getMethod();
-                    LuceneFieldType lft = fieldTypes.get(method);
-                    if (lft != null) {
-                        return LuceneAnalyzerRegistry.getAnalyzer(lft, defaultLang);
-                    }
-                }
+            // Physical field names are already fully specified; fall
+            // back to the default analyzer in that case.
+            if (isPhysicalFieldName(fieldPath)) {
+                return getAnalyzer();
+            }
+
+            ResolvedField resolved = resolveField(fieldPath);
+            if (resolved != null && resolved.lft != null) {
+                return LuceneAnalyzerRegistry.getAnalyzer(resolved.lft, resolved.lang);
             }
         } catch (Exception e) {
             // Fall back to default analyzer
         }
-        
+
         return getAnalyzer();
+    }
+
+    /**
+     * Helper class capturing the resolution of a logical JVS field
+     * path (with optional method suffix) to a base path and Lucene
+     * field type.
+     */
+    private static class ResolvedField {
+        final Propaccess baseAccess;
+        final LuceneFieldType lft;
+        final boolean multiValued;
+        final String lang;
+
+        ResolvedField(Propaccess baseAccess, LuceneFieldType lft, boolean multiValued, String lang) {
+            this.baseAccess = baseAccess;
+            this.lft = lft;
+            this.multiValued = multiValued;
+            this.lang = lang;
+        }
+    }
+
+    /**
+     * Core resolution logic shared between field name mapping and
+     * analyzer selection.
+     *
+     * @param fieldPath Logical field path, optionally with a trailing
+     *                  indexing method (e.g. ".text").
+     * @return ResolvedField or null if the path cannot be mapped via
+     *         the type system.
+     */
+    private ResolvedField resolveField(String fieldPath) {
+        if (type == null || fieldPath == null) {
+            return null;
+        }
+
+        Propaccess access = new Propaccess(fieldPath);
+
+        // Determine how much of the path matches the type system.
+        int commonDepth = type.getMaxCommonDepth(access);
+        if (commonDepth == 0) {
+            // No prefix in the type system – treat as unknown.
+            return null;
+        }
+
+        // Build the base field path from the matching prefix.
+        StringBuilder basePathBuilder = new StringBuilder();
+        for (int i = 0; i < commonDepth; i++) {
+            if (i > 0) {
+                basePathBuilder.append('.');
+            }
+            basePathBuilder.append(access.get(i).name());
+        }
+        String baseFieldPath = basePathBuilder.toString();
+        Propaccess baseAccess = new Propaccess(baseFieldPath);
+
+        // Resolve the base field from the type system.
+        Field field = type.getField(baseAccess);
+        if (field == null) {
+            return null;
+        }
+
+        // Determine if we have a trailing method override segment.
+        String methodOverride = null;
+        if (access.length() > commonDepth) {
+            methodOverride = access.get(access.length() - 1).name();
+        }
+
+        // Select the appropriate group for indexing.
+        Group group = null;
+        if (methodOverride != null) {
+            Collection<Group> indexGroups = field.getGroup("index");
+            if (indexGroups != null) {
+                for (Group g : indexGroups) {
+                    if (methodOverride.equals(g.getMethod())) {
+                        group = g;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Fall back to the default index group if no override matched.
+        if (group == null) {
+            group = type.getDefaultGroupFor(baseAccess, "index");
+        }
+
+        if (group == null) {
+            return null;
+        }
+
+        String method = group.getMethod();
+        LuceneFieldType lft = fieldTypes.get(method);
+        if (lft == null) {
+            return null;
+        }
+
+        boolean isMulti = type.isMultiValuedPath(baseAccess);
+        return new ResolvedField(baseAccess, lft, isMulti, defaultLang);
+    }
+
+    /**
+     * Detect whether a field path already looks like a concrete
+     * Lucene field name, e.g. "title.mls.text_en_s".
+     */
+    private boolean isPhysicalFieldName(String fieldPath) {
+        int lastDot = fieldPath.lastIndexOf('.');
+        if (lastDot <= 0 || lastDot == fieldPath.length() - 1) {
+            return false;
+        }
+
+        String lastPart = fieldPath.substring(lastDot + 1);
+        // Matches patterns like:
+        //   text_en_s, text_en_m, identifier_s, long_m, double_s, date_s, boolean_m, textmarkup_en_s
+        return lastPart.matches("(text|textmarkup|identifier|long|int|double|date|boolean)(_[a-z]{2})?_[sm]");
     }
 
     /**

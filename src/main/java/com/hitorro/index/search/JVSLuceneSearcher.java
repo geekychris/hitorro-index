@@ -98,7 +98,7 @@ public class JVSLuceneSearcher implements AutoCloseable {
      * @throws ParseException if query parsing fails
      */
     public SearchResult search(String queryString, int offset, int limit) throws IOException, ParseException {
-        return search(queryString, offset, limit, null);
+        return search(queryString, offset, limit, null, null);
     }
 
     /**
@@ -112,38 +112,55 @@ public class JVSLuceneSearcher implements AutoCloseable {
      * @throws IOException    if search fails
      * @throws ParseException if query parsing fails
      */
-    public SearchResult search(String queryString, int offset, int limit, List<String> facetDims) 
+    public SearchResult search(String queryString, int offset, int limit, List<String> facetDims)
+            throws IOException, ParseException {
+        return search(queryString, offset, limit, facetDims, null);
+    }
+
+    /**
+     * Search with faceting and explicit language selection.
+     *
+     * @param queryString Lucene query string
+     * @param offset      Starting offset
+     * @param limit       Maximum number of results
+     * @param facetDims   Dimensions to facet on (null for no faceting)
+     * @param lang        Optional ISO 639-1 language code for i18n fields;
+     *                    if null or empty, the searcher's defaultLang is used.
+     */
+    public SearchResult search(String queryString, int offset, int limit, List<String> facetDims, String lang)
             throws IOException, ParseException {
         long startTime = System.currentTimeMillis();
-        
+
+        String effectiveLang = (lang != null && !lang.isEmpty()) ? lang : defaultLang;
+
         // Parse query using JVS-aware parser
-        JVSQueryParser parser = new JVSQueryParser(type, "content", analyzer, defaultLang);
+        JVSQueryParser parser = new JVSQueryParser(type, "content", analyzer, effectiveLang);
         Query query = parser.parse(queryString);
-        
+
         // Execute search
         TopDocs topDocs = searcher.search(query, offset + limit);
         long totalHits = topDocs.totalHits.value;
-        
+
         // Collect documents
         List<JVS> documents = new ArrayList<>();
         ScoreDoc[] hits = topDocs.scoreDocs;
         int start = Math.min(offset, hits.length);
         int end = Math.min(offset + limit, hits.length);
-        
+
         for (int i = start; i < end; i++) {
             Document doc = searcher.storedFields().document(hits[i].doc);
             JVS jvs = convertDocumentToJVS(doc, hits[i].score);
             documents.add(jvs);
         }
-        
+
         // Collect facets if requested
         Map<String, FacetResult> facetResults = null;
         if (facetDims != null && !facetDims.isEmpty()) {
             facetResults = collectFacets(query, facetDims);
         }
-        
+
         long searchTime = System.currentTimeMillis() - startTime;
-        
+
         return SearchResult.builder()
                 .documents(documents)
                 .totalHits(totalHits)

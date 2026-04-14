@@ -145,20 +145,25 @@ Configure index storage and settings:
 ```java
 IndexConfig config = IndexConfig.builder()
     .filesystem("/path/to/index")
-    .ramBufferSize(32.0)  // MB
+    .ramBufferSize(32.0)      // MB
     .maxBufferedDocs(1000)
     .autoCommit(true)
-    .commitInterval(60)  // seconds
+    .commitInterval(60)       // seconds
+    .storeSource(false)       // Don't store full doc JSON in index (use KV store instead)
     .build();
 ```
+
+**`storeSource` option** (default: `true`): When enabled, the full document JSON is stored as a `_source` field in Lucene for faithful reconstruction in search results. When disabled, saves index storage — use an external store (e.g., RocksDB KVStore) for full document retrieval. Without `_source`, search results contain only projected stored fields (flat structure).
 
 ### JVSLuceneIndexWriter
 
 Index, update, and delete documents:
 
 ```java
-indexWriter.indexDocument(jvs);
-indexWriter.indexDocuments(List<JVS>);
+indexWriter.indexDocument(jvs);                           // Index with _source
+indexWriter.indexDocument(jvs, embedding);                // Index with out-of-band embedding
+indexWriter.indexDocuments(List<JVS>);                    // Batch index
+indexWriter.indexDocuments(List<JVS>, List<JsonNode>);    // Batch with separate _source docs
 indexWriter.updateDocument(idField, idValue, jvs);
 indexWriter.deleteDocument(idField, idValue);
 indexWriter.commit();

@@ -44,6 +44,7 @@ public class IndexConfig {
     private final boolean autoCommit;
     private final int commitIntervalSeconds;
     private final EmbeddingConfig embeddingConfig;
+    private final boolean storeSource;
 
     private IndexConfig(Builder builder) throws IOException {
         this.directory = builder.directory;
@@ -53,6 +54,7 @@ public class IndexConfig {
         this.autoCommit = builder.autoCommit;
         this.commitIntervalSeconds = builder.commitIntervalSeconds;
         this.embeddingConfig = builder.embeddingConfig;
+        this.storeSource = builder.storeSource;
     }
 
     public Directory getDirectory() {
@@ -94,6 +96,15 @@ public class IndexConfig {
     }
 
     /**
+     * Whether to store the full original document JSON as a _source field.
+     * When true (default), search results reconstruct the complete document from _source.
+     * When false, saves index storage; use an external store (e.g. KVStore) for full document retrieval.
+     */
+    public boolean isStoreSource() {
+        return storeSource;
+    }
+
+    /**
      * Create an IndexWriterConfig from this configuration.
      *
      * @return Configured IndexWriterConfig
@@ -118,6 +129,7 @@ public class IndexConfig {
         private boolean autoCommit = true;
         private int commitIntervalSeconds = 60;
         private EmbeddingConfig embeddingConfig = null;
+        private boolean storeSource = true;
 
         /**
          * Use in-memory storage (RAMDirectory).
@@ -215,6 +227,16 @@ public class IndexConfig {
          */
         public Builder embeddings(EmbeddingConfig embeddingConfig) {
             this.embeddingConfig = embeddingConfig;
+            return this;
+        }
+
+        /**
+         * Control whether the full document JSON is stored as a _source field in the index.
+         * Default is true. Set to false to save index storage when using an external document
+         * store (e.g. RocksDB KVStore) for full document retrieval.
+         */
+        public Builder storeSource(boolean storeSource) {
+            this.storeSource = storeSource;
             return this;
         }
 

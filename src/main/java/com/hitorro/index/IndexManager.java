@@ -186,7 +186,15 @@ public class IndexManager implements Closeable {
         IndexHandle handle = getRequiredIndex(indexName);
         handle.getWriter().indexDocuments(documents);
     }
-    
+
+    /**
+     * Index documents with separate clean source documents for _source storage.
+     */
+    public void indexDocuments(String indexName, List<JVS> documents, List<com.fasterxml.jackson.databind.JsonNode> sourceDocs) throws IOException {
+        IndexHandle handle = getRequiredIndex(indexName);
+        handle.getWriter().indexDocuments(documents, sourceDocs);
+    }
+
     /**
      * Commit changes to a specific index.
      * 

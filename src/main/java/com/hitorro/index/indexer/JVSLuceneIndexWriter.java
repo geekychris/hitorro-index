@@ -91,7 +91,12 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
      */
     public void indexDocument(JVS jvs, float[] embedding) throws IOException {
         Document doc = projectToLuceneDocument(jvs, embedding);
-        
+
+        // Store full document JSON as _source for faithful reconstruction in search results
+        if (config.isStoreSource()) {
+            doc.add(new org.apache.lucene.document.StoredField("_source", jvs.getJsonNode().toString()));
+        }
+
         lock.writeLock().lock();
         try {
             // Try to extract document ID for update/replace logic
@@ -176,19 +181,40 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
      * @throws IOException if indexing fails
      */
     public void indexDocuments(List<JVS> documents) throws IOException {
+        indexDocuments(documents, null);
+    }
+
+    /**
+     * Index multiple JVS documents, optionally using separate source documents for _source storage.
+     * This allows indexing enriched documents (for searchable NLP fields) while storing
+     * clean originals in _source for faithful reconstruction in search results.
+     *
+     * @param documents     The JVS documents to index (may be enriched for field projection)
+     * @param sourceDocs    Optional clean documents for _source storage (same order as documents).
+     *                      If null, uses the indexed documents themselves.
+     */
+    public void indexDocuments(List<JVS> documents, List<com.fasterxml.jackson.databind.JsonNode> sourceDocs) throws IOException {
         lock.writeLock().lock();
         try {
-            for (JVS jvs : documents) {
+            for (int i = 0; i < documents.size(); i++) {
+                JVS jvs = documents.get(i);
                 Document doc = projectToLuceneDocument(jvs);
-                
+
+                // Store _source: use clean source doc if provided, otherwise the indexed doc
+                if (config.isStoreSource()) {
+                    com.fasterxml.jackson.databind.JsonNode sourceNode = (sourceDocs != null && i < sourceDocs.size())
+                            ? sourceDocs.get(i) : jvs.getJsonNode();
+                    doc.add(new org.apache.lucene.document.StoredField("_source", sourceNode.toString()));
+                }
+
                 // Extract document ID and use update logic for each document
                 String docId = extractDocumentId(jvs);
-                
+
                 if (docId != null) {
                     // Add _uid field for guaranteed uniqueness
                     doc.add(new org.apache.lucene.document.StringField(
                         "_uid", docId, org.apache.lucene.document.Field.Store.YES));
-                    
+
                     // Use _uid field for document replacement
                     indexWriter.updateDocument(new Term("_uid", docId), doc);
                 } else {

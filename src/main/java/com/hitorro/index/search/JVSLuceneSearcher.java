@@ -648,36 +648,53 @@ public class JVSLuceneSearcher implements AutoCloseable {
 
     /**
      * Convert Lucene Document to JVS.
-     * This creates a minimal JVS with only the stored fields.
+     * Uses _source field (full original JSON) when available for faithful reconstruction.
+     * Falls back to field-by-field reconstruction from stored Lucene fields.
      */
     private JVS convertDocumentToJVS(Document doc, float score) {
+        // Try _source first - contains the full original document JSON
+        String source = doc.get("_source");
+        if (source != null) {
+            try {
+                JVS jvs = JVS.read(source);
+                jvs.set("_score", score);
+                // Preserve internal Lucene fields (e.g. _uid) on the reconstructed doc
+                String uid = doc.get("_uid");
+                if (uid != null) jvs.set("_uid", uid);
+                return jvs;
+            } catch (Exception e) {
+                // Fall through to field-by-field reconstruction
+            }
+        }
+
+        // Fallback: reconstruct from individual stored fields
         JVS jvs = new JVS();
-        
+
         try {
             // Add score
             jvs.set("_score", score);
-            
+
             // Collect all field values (handling multi-valued fields)
             // Key = original field path (with index type suffix stripped)
             // Value = list of values
             Map<String, List<String>> fieldValues = new HashMap<>();
-            
+
             for (org.apache.lucene.index.IndexableField field : doc.getFields()) {
                 String name = field.name();
                 String value = field.stringValue();
-                
-                if (value != null) {
+
+                if (value != null && !"_source".equals(name)) {
                     // Strip index type suffixes like .text_en_s, .text_en_m, .identifier_s, .long_m, etc.
                     String cleanPath = stripIndexTypeSuffix(name);
                     fieldValues.computeIfAbsent(cleanPath, k -> new ArrayList<>()).add(value);
                 }
             }
-            
+
             // Add fields to JVS using proper path notation
             for (Map.Entry<String, List<String>> entry : fieldValues.entrySet()) {
                 String fieldPath = entry.getKey();
                 List<String> values = entry.getValue();
-                
+
                 try {
                     if (values.size() == 1) {
                         jvs.set(fieldPath, values.get(0));
@@ -692,7 +709,7 @@ public class JVSLuceneSearcher implements AutoCloseable {
         } catch (Exception e) {
             // Ignore errors
         }
-        
+
         return jvs;
     }
     

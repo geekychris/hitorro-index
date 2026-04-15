@@ -68,7 +68,7 @@ public class SearchResponseStream {
      * @param result SearchResult to convert
      * @return NDJson string with newlines
      */
-    public static String toNDJsonString(SearchResult result) {
+    public static final String toNDJsonString(SearchResult result) {
         StringBuilder sb = new StringBuilder();
         
         // Metadata line

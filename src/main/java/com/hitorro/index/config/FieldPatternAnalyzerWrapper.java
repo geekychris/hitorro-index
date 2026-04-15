@@ -150,7 +150,7 @@ public class FieldPatternAnalyzerWrapper extends DelegatingAnalyzerWrapper {
      * Extract language code from field name.
      * Example: "title.mls.text_en_s" -> "en"
      */
-    public static String extractLanguageFromFieldName(String fieldName) {
+    public static final String extractLanguageFromFieldName(String fieldName) {
         // Match pattern: *.text_XX_[sm] or *.textmarkup_XX_[sm]
         java.util.regex.Matcher matcher = Pattern.compile(".*\\.(text|textmarkup)_([a-z]{2})_[sm]$")
                 .matcher(fieldName);
@@ -165,7 +165,7 @@ public class FieldPatternAnalyzerWrapper extends DelegatingAnalyzerWrapper {
      * Example: "title.mls.text_en_s" -> "text"
      * Example: "brand.identifier_s" -> "identifier"
      */
-    public static String extractAnalyzerTypeFromFieldName(String fieldName) {
+    public static final String extractAnalyzerTypeFromFieldName(String fieldName) {
         // Match known patterns
         if (fieldName.matches(".*\\.text_[a-z]{2}_[sm]$")) {
             return "text";

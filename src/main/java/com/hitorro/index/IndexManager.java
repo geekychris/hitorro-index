@@ -319,24 +319,35 @@ public class IndexManager implements Closeable {
             
             for (int i = start; i < end; i++) {
                 org.apache.lucene.document.Document doc = multiSearcher.storedFields().document(hits[i].doc);
-                // Convert to JVS (simplified - no field reconstruction)
-                JVS jvs = new JVS();
-                jvs.set("_score", hits[i].score);
-                jvs.set("_index", getIndexNameForDoc(hits[i].doc, readers));
-                
-                // Add stored fields
-                for (org.apache.lucene.index.IndexableField field : doc.getFields()) {
-                    String name = field.name();
-                    String value = field.stringValue();
-                    if (value != null) {
-                        try {
-                            jvs.set(name, value);
-                        } catch (Exception e) {
-                            // Skip field if can't set
-                        }
+                String indexName = getIndexNameForDoc(hits[i].doc, readers, indexNames);
+
+                // Reconstruct from _source (full original JSON) when available
+                String source = doc.get("_source");
+                JVS jvs;
+                if (source != null) {
+                    try {
+                        jvs = JVS.read(source);
+                    } catch (Exception e) {
+                        jvs = new JVS();
                     }
+                } else {
+                    jvs = new JVS();
                 }
-                
+
+                jvs.set("_score", hits[i].score);
+                jvs.set("_index", indexName);
+                String uid = doc.get("_uid");
+                if (uid != null) {
+                    jvs.set("_uid", uid);
+                    // Ensure id.id is present
+                    try {
+                        Object idId = jvs.get("id.id");
+                        if (idId == null || (idId instanceof com.fasterxml.jackson.databind.JsonNode n && n.isMissingNode())) {
+                            jvs.set("id.id", uid);
+                        }
+                    } catch (Exception ignored) {}
+                }
+
                 documents.add(jvs);
             }
             
@@ -359,15 +370,13 @@ public class IndexManager implements Closeable {
     /**
      * Determine which index a document came from in a MultiReader search.
      */
-    private String getIndexNameForDoc(int docId, List<IndexReader> readers) {
+    private String getIndexNameForDoc(int docId, List<IndexReader> readers, List<String> indexNames) {
         int currentBase = 0;
-        int index = 0;
-        for (IndexReader reader : readers) {
-            if (docId < currentBase + reader.maxDoc()) {
-                return new ArrayList<>(indexes.keySet()).get(index);
+        for (int i = 0; i < readers.size(); i++) {
+            if (docId < currentBase + readers.get(i).maxDoc()) {
+                return i < indexNames.size() ? indexNames.get(i) : "unknown";
             }
-            currentBase += reader.maxDoc();
-            index++;
+            currentBase += readers.get(i).maxDoc();
         }
         return "unknown";
     }

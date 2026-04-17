@@ -658,9 +658,18 @@ public class JVSLuceneSearcher implements AutoCloseable {
             try {
                 JVS jvs = JVS.read(source);
                 jvs.set("_score", score);
-                // Preserve internal Lucene fields (e.g. _uid) on the reconstructed doc
+                // Preserve _uid and ensure id.id is present
                 String uid = doc.get("_uid");
-                if (uid != null) jvs.set("_uid", uid);
+                if (uid != null) {
+                    jvs.set("_uid", uid);
+                    // Ensure id.id is on the reconstructed doc (may already be there from ensureIdField at index time)
+                    try {
+                        Object idId = jvs.get("id.id");
+                        if (idId == null || (idId instanceof com.fasterxml.jackson.databind.JsonNode n && n.isMissingNode())) {
+                            jvs.set("id.id", uid);
+                        }
+                    } catch (Exception ignored) {}
+                }
                 return jvs;
             } catch (Exception e) {
                 // Fall through to field-by-field reconstruction

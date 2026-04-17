@@ -26,6 +26,7 @@ Apache Lucene integration for the Hitorro JSON Type System (JVS), providing full
 - [The _source Field](#the-_source-field)
 - [Type System Integration](#type-system-integration)
 - [Configuration Reference](#configuration-reference)
+- [Example Datasets](#example-datasets)
 - [Performance Tuning](#performance-tuning)
 
 ---
@@ -129,6 +130,7 @@ Tests use in-memory indexes (ByteBuffersDirectory) for fast execution -- no file
 | `EmbeddingSearchTest` | KNN vector search integration |
 | `ByteVectorTest` | Quantized byte vector indexing and search |
 | `EmbeddingDebugTest` | Vector search debugging utilities |
+| `ExampleDatasetsTest` | Dataset loading, field validation, multi-index search, pagination |
 
 ---
 
@@ -850,6 +852,83 @@ Edit `config/jsonconfigs/lucene_fields.json`:
 | `indexed` | boolean | Field is searchable |
 | `tokenized` | boolean | Field is analyzed (tokenized) |
 | `docValues` | boolean | Supports faceting and sorting |
+
+---
+
+## Example Datasets
+
+The `ExampleDatasets` utility class provides three pre-built datasets for testing, demos, and quick-start scenarios. Each dataset has 15 documents with distinct field structures.
+
+### Available Datasets
+
+| Dataset | Index Name | Fields | Content |
+|---------|-----------|--------|---------|
+| `ARTICLES` | `articles` | id, title, content, author, department, tags, doctype | News and research articles (climate, quantum, AI, gene therapy, etc.) |
+| `PRODUCTS` | `products` | id, name, description, brand, price, category, inStock, doctype | E-commerce products (laptop, headphones, desk, shoes, etc.) |
+| `MOVIES` | `movies` | id, title, plot, director, genre, year, rating, doctype | Film catalog (thriller, sci-fi, drama, animation, etc.) |
+
+### Loading Datasets
+
+```java
+IndexManager manager = new IndexManager("en");
+
+// Load a single dataset
+ExampleDatasets.loadArticles(manager);
+
+// Load selected datasets
+ExampleDatasets.load(manager, Dataset.ARTICLES, Dataset.MOVIES);
+
+// Load all three datasets
+ExampleDatasets.LoadResult result = ExampleDatasets.loadAll(manager);
+System.out.println("Loaded " + result.getTotalLoaded() + " documents"); // 45
+System.out.println("Datasets: " + result.getLoadedDatasets());         // [ARTICLES, PRODUCTS, MOVIES]
+```
+
+### Searching Loaded Indices
+
+```java
+IndexManager manager = new IndexManager("en");
+ExampleDatasets.loadAll(manager);
+
+// Search a single index
+SearchResult articles = manager.search("articles", "*:*", 0, 10, null);
+
+// Search across selected indices
+SearchResult result = manager.searchMultiple(
+    List.of("articles", "movies"), "*:*", 0, 20);
+
+// Search all three indices
+SearchResult all = manager.searchMultiple(
+    List.of("articles", "products", "movies"), "*:*", 0, 50);
+// 45 total hits
+```
+
+### Accessing Raw Documents
+
+```java
+// Get documents without indexing
+List<JVS> articles = ExampleDatasets.getArticles();
+List<JVS> products = ExampleDatasets.getProducts();
+List<JVS> movies   = ExampleDatasets.getMovies();
+
+// Or by enum
+List<JVS> docs = ExampleDatasets.getDocuments(Dataset.PRODUCTS);
+
+// List available datasets
+List<Dataset> available = ExampleDatasets.getAvailableDatasets();
+```
+
+### LoadResult Metadata
+
+```java
+ExampleDatasets.LoadResult result = ExampleDatasets.loadAll(manager);
+
+result.getManager();                           // the IndexManager
+result.getTotalLoaded();                       // 45
+result.getLoadedDatasets();                    // Set<Dataset>
+result.getLoadedCounts();                      // {ARTICLES=15, PRODUCTS=15, MOVIES=15}
+result.getLoadedCounts().get(Dataset.MOVIES);  // 15
+```
 
 ---
 

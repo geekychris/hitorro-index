@@ -90,9 +90,13 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
      * @throws IOException if indexing fails
      */
     public void indexDocument(JVS jvs, float[] embedding) throws IOException {
+        // Ensure id.id is computed from domain:did if not already present
+        ensureIdField(jvs);
+
         Document doc = projectToLuceneDocument(jvs, embedding);
 
-        // Store full document JSON as _source for faithful reconstruction in search results
+        // Store full document JSON as _source for faithful reconstruction in search results.
+        // This happens AFTER ensureIdField so _source includes id.id.
         if (config.isStoreSource()) {
             doc.add(new org.apache.lucene.document.StoredField("_source", jvs.getJsonNode().toString()));
         }
@@ -101,20 +105,20 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
         try {
             // Try to extract document ID for update/replace logic
             String docId = extractDocumentId(jvs);
-            
+
             if (docId != null) {
                 // Add a special _uid field for guaranteed uniqueness
                 // This field is always indexed and can be reliably used for updates
                 doc.add(new org.apache.lucene.document.StringField(
                     "_uid", docId, org.apache.lucene.document.Field.Store.YES));
-                
+
                 // Use _uid field for document replacement
                 indexWriter.updateDocument(new Term("_uid", docId), doc);
             } else {
                 // No ID found, just add document
                 indexWriter.addDocument(doc);
             }
-            
+
             if (config.isAutoCommit()) {
                 // Auto-commit will be handled by periodic commit
             }
@@ -122,32 +126,74 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
             lock.writeLock().unlock();
         }
     }
+
+    /**
+     * Ensures the id.id field is populated on the JVS document.
+     * If id.domain and id.did exist but id.id does not, synthesizes id.id as "domain:did".
+     * This mirrors the type system's multivalue-merger dynamic field computation on core_id.
+     */
+    private void ensureIdField(JVS jvs) {
+        try {
+            // Skip if id.id already exists (e.g. from enrichment)
+            Object existing = jvs.get("id.id");
+            if (existing != null && existing instanceof com.fasterxml.jackson.databind.JsonNode node
+                    && node.isTextual() && !node.asText().isEmpty()) {
+                return;
+            }
+
+            // Synthesize from domain + did
+            Object domainObj = jvs.get("id.domain");
+            Object didObj = jvs.get("id.did");
+            if (domainObj != null && didObj != null) {
+                String domain = extractStringValue(domainObj);
+                String did = extractStringValue(didObj);
+                if (domain != null && !domain.isEmpty() && did != null && !did.isEmpty()) {
+                    jvs.set("id.id", domain + ":" + did);
+                }
+            }
+        } catch (Exception e) {
+            // Non-fatal -- id.id is optional
+        }
+    }
     
     /**
      * Extract document ID from JVS for uniqueness checking.
      * Tries multiple ID field patterns:
-     * 1. id.did (domain-specific ID)
-     * 2. id.id (combined domain:did format)
-     * 3. id (simple string ID)
+     * 1. id.id (combined "domain:did" format -- dynamically computed by type system)
+     * 2. id.domain + id.did (synthesize "domain:did" when both parts exist)
+     * 3. id.did alone (fallback if no domain)
+     * 4. id (simple string ID)
      */
     private String extractDocumentId(JVS jvs) {
         try {
-            // Try id.did first (most common pattern)
-            Object idObj = jvs.get("id.did");
-            if (idObj != null) {
-                return extractStringValue(idObj);
+            // Try id.id first (dynamically computed by type system's multivalue-merger)
+            Object idId = jvs.get("id.id");
+            if (idId != null) {
+                String val = extractStringValue(idId);
+                if (val != null && !val.isEmpty()) return val;
             }
-            
-            // Try id.id (combined format like "sysobject:doc001")
-            idObj = jvs.get("id.id");
-            if (idObj != null) {
-                return extractStringValue(idObj);
+
+            // Synthesize domain:did when both parts exist
+            Object domainObj = jvs.get("id.domain");
+            Object didObj = jvs.get("id.did");
+            if (domainObj != null && didObj != null) {
+                String domain = extractStringValue(domainObj);
+                String did = extractStringValue(didObj);
+                if (domain != null && !domain.isEmpty() && did != null && !did.isEmpty()) {
+                    return domain + ":" + did;
+                }
             }
-            
-            // Try simple id field
-            idObj = jvs.get("id");
-            if (idObj != null) {
-                return extractStringValue(idObj);
+
+            // Fallback to id.did alone
+            if (didObj != null) {
+                String val = extractStringValue(didObj);
+                if (val != null && !val.isEmpty()) return val;
+            }
+
+            // Fallback to simple string id field
+            Object idObj = jvs.get("id");
+            if (idObj != null && idObj instanceof JsonNode node && node.isTextual()) {
+                return node.asText();
             }
         } catch (Exception e) {
             // ID not found or error accessing it

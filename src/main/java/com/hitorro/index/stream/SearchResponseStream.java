@@ -28,89 +28,92 @@ import reactor.core.publisher.Flux;
 
 /**
  * Streams search results as NDJson (newline-delimited JSON).
- * Outputs three types of objects:
- * 1. Metadata object (search stats)
- * 2. Facets object (facet results)
- * 3. Document objects (search results)
+ *
+ * <p>Stream ordering:
+ * <ol>
+ *   <li>Metadata object ({@code _type: "meta"}) -- search stats</li>
+ *   <li>Document objects ({@code _type: "doc"}) -- one per line, streamed</li>
+ *   <li>Facets object ({@code _type: "facets"}) -- after all documents</li>
+ * </ol>
+ *
+ * <p>This ordering allows consumers to display documents as they arrive,
+ * then update facet navigation after the stream completes.
  */
 public class SearchResponseStream {
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
      * Convert SearchResult to NDJson stream.
-     * First line: metadata
-     * Second line: facets (if present)
-     * Remaining lines: documents
-     *
-     * @param result SearchResult to stream
-     * @return Flux of JSON strings (one per line)
+     * Order: metadata, documents, facets (tail).
      */
     public static Flux<String> toNDJson(SearchResult result) {
         return Flux.concat(
-                // First emit metadata
+                // 1. Metadata
                 Flux.just(result.toMetadataJVS())
+                        .doOnNext(jvs -> jvs.set("_type", "meta"))
                         .map(SearchResponseStream::toJson),
-                
-                // Then emit facets if present
-                result.hasFacets() 
-                    ? Flux.just(result.toFacetsJVS()).map(SearchResponseStream::toJson)
-                    : Flux.empty(),
-                
-                // Finally emit all documents
+
+                // 2. Documents
                 Flux.fromIterable(result.getDocuments())
+                        .doOnNext(jvs -> jvs.set("_type", "doc"))
+                        .map(SearchResponseStream::toJson),
+
+                // 3. Facets at the tail (after all documents)
+                result.hasFacets()
+                    ? Flux.just(result.toFacetsJVS())
+                        .doOnNext(jvs -> jvs.set("_type", "facets"))
                         .map(SearchResponseStream::toJson)
+                    : Flux.empty()
         );
     }
 
     /**
      * Convert SearchResult to a single NDJson string.
-     *
-     * @param result SearchResult to convert
-     * @return NDJson string with newlines
+     * Order: metadata, documents, facets (tail).
      */
     public static final String toNDJsonString(SearchResult result) {
         StringBuilder sb = new StringBuilder();
-        
-        // Metadata line
-        sb.append(toJson(result.toMetadataJVS())).append('\n');
-        
-        // Facets line (if present)
-        if (result.hasFacets()) {
-            sb.append(toJson(result.toFacetsJVS())).append('\n');
-        }
-        
-        // Document lines
+
+        // 1. Metadata
+        JVS meta = result.toMetadataJVS();
+        meta.set("_type", "meta");
+        sb.append(toJson(meta)).append('\n');
+
+        // 2. Documents
         for (JVS doc : result.getDocuments()) {
+            doc.set("_type", "doc");
             sb.append(toJson(doc)).append('\n');
         }
-        
+
+        // 3. Facets at the tail
+        if (result.hasFacets()) {
+            JVS facets = result.toFacetsJVS();
+            facets.set("_type", "facets");
+            sb.append(toJson(facets)).append('\n');
+        }
+
         return sb.toString();
     }
 
     /**
      * Stream search results as Flux of JVS objects (not serialized).
-     * Useful for downstream processing before serialization.
-     *
-     * @param result SearchResult to stream
-     * @return Flux of JVS objects
+     * Order: metadata, documents, facets (tail).
      */
     public static Flux<JVS> toJVSStream(SearchResult result) {
         return Flux.concat(
-                Flux.just(result.toMetadataJVS()),
-                result.hasFacets() 
-                    ? Flux.just(result.toFacetsJVS())
-                    : Flux.empty(),
+                Flux.just(result.toMetadataJVS())
+                        .doOnNext(jvs -> jvs.set("_type", "meta")),
                 Flux.fromIterable(result.getDocuments())
+                        .doOnNext(jvs -> jvs.set("_type", "doc")),
+                result.hasFacets()
+                    ? Flux.just(result.toFacetsJVS())
+                        .doOnNext(jvs -> jvs.set("_type", "facets"))
+                    : Flux.empty()
         );
     }
 
-    /**
-     * Convert JVS to JSON string.
-     */
     private static String toJson(JVS jvs) {
-        if (jvs == null) {
-            return "{}";
-        }
+        if (jvs == null) return "{}";
         try {
             return objectMapper.writeValueAsString(jvs.getJsonNode());
         } catch (Exception e) {

@@ -605,30 +605,70 @@ public class JVSLuceneSearcher implements AutoCloseable {
      * Collect facets for the given query and dimensions.
      */
     private Map<String, FacetResult> collectFacets(Query query, List<String> facetDims) throws IOException {
-        try {
-            SortedSetDocValuesReaderState state = new DefaultSortedSetDocValuesReaderState(reader);
-            FacetsCollector fc = new FacetsCollector();
-            FacetsCollector.search(searcher, query, 10, fc);
-            
-            Facets facets = new SortedSetDocValuesFacetCounts(state, fc);
-            Map<String, FacetResult> results = new HashMap<>();
-            
-            for (String dim : facetDims) {
-                try {
-                    org.apache.lucene.facet.FacetResult luceneFacetResult = facets.getTopChildren(100, dim);
-                    if (luceneFacetResult != null) {
-                        results.put(dim, convertLuceneFacetResult(luceneFacetResult));
-                    }
-                } catch (Exception e) {
-                    // Dimension may not exist or have no values
+        Map<String, FacetResult> results = new HashMap<>();
+
+        // Collect matching doc IDs
+        org.apache.lucene.search.TopDocs topDocs = searcher.search(query, reader.maxDoc());
+        Set<Integer> matchingDocs = new HashSet<>();
+        for (var sd : topDocs.scoreDocs) matchingDocs.add(sd.doc);
+
+        // Find SortedSetDocValues fields for requested dimensions
+        Set<String> knownFields = new HashSet<>();
+        for (var leaf : reader.leaves()) {
+            for (var fi : leaf.reader().getFieldInfos()) {
+                if (fi.getDocValuesType() == org.apache.lucene.index.DocValuesType.SORTED_SET) {
+                    knownFields.add(fi.name);
                 }
             }
-            
-            return results;
-        } catch (Exception e) {
-            // Faceting failed, return empty map
-            return new HashMap<>();
         }
+
+        for (String dim : facetDims) {
+            // Resolve field name: try "department" directly, then "department.identifier_s" etc.
+            String fieldName = null;
+            if (knownFields.contains(dim)) {
+                fieldName = dim;
+            } else {
+                for (String known : knownFields) {
+                    if (known.startsWith(dim + ".") || known.startsWith(dim + "_")) {
+                        fieldName = known;
+                        break;
+                    }
+                }
+            }
+            if (fieldName == null) continue;
+
+            // Count values manually from SortedSetDocValues
+            Map<String, Long> counts = new LinkedHashMap<>();
+            for (var leaf : reader.leaves()) {
+                org.apache.lucene.index.SortedSetDocValues dv =
+                    leaf.reader().getSortedSetDocValues(fieldName);
+                if (dv == null) continue;
+
+                int docBase = leaf.docBase;
+                for (int localDoc = 0; localDoc < leaf.reader().maxDoc(); localDoc++) {
+                    if (!matchingDocs.contains(docBase + localDoc)) continue;
+                    if (!dv.advanceExact(localDoc)) continue;
+
+                    long ord;
+                    while ((ord = dv.nextOrd()) != org.apache.lucene.index.SortedSetDocValues.NO_MORE_ORDS) {
+                        String val = dv.lookupOrd(ord).utf8ToString();
+                        counts.merge(val, 1L, Long::sum);
+                    }
+                }
+            }
+
+            if (!counts.isEmpty()) {
+                long total = counts.values().stream().mapToLong(Long::longValue).sum();
+                List<FacetResult.FacetValue> values = counts.entrySet().stream()
+                    .sorted((a, b) -> Long.compare(b.getValue(), a.getValue()))
+                    .limit(100)
+                    .map(e -> new FacetResult.FacetValue(e.getKey(), e.getValue()))
+                    .toList();
+                results.put(dim, new FacetResult(dim, values, total));
+            }
+        }
+
+        return results;
     }
 
     /**

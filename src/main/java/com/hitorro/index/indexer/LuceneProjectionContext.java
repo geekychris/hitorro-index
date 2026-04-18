@@ -157,16 +157,9 @@ public class LuceneProjectionContext extends ProjectionContext {
                     }
                     break;
                 default:
-                    // For text and other string types
-                    if (isMultiValued) {
-                        // Multi-valued string field
-                        document.add(new SortedSetDocValuesField(fieldName, 
-                            new org.apache.lucene.util.BytesRef(getTextValue(value))));
-                    } else {
-                        // Single-valued string field
-                        document.add(new SortedDocValuesField(fieldName, 
-                            new org.apache.lucene.util.BytesRef(getTextValue(value))));
-                    }
+                    // For string types, use SortedSetDocValuesField for faceting
+                    document.add(new SortedSetDocValuesField(fieldName,
+                        new org.apache.lucene.util.BytesRef(getTextValue(value))));
                     break;
             }
         }

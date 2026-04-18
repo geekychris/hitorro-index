@@ -56,6 +56,7 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
     
     private final IndexWriter indexWriter;
     private final IndexConfig config;
+    private final FacetsConfig facetsConfig;
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     
     // Cache for execution builders per type
@@ -66,6 +67,12 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
         this.config = config;
         IndexWriterConfig writerConfig = config.createIndexWriterConfig();
         this.indexWriter = new IndexWriter(config.getDirectory(), writerConfig);
+        this.facetsConfig = new FacetsConfig();
+    }
+
+    /** Register a facet field as multi-valued (call during indexing setup or lazily). */
+    private void ensureFacetConfigured(String fieldName) {
+        facetsConfig.setMultiValued(fieldName, true);
     }
 
     /**
@@ -108,14 +115,10 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
 
             if (docId != null) {
                 // Add a special _uid field for guaranteed uniqueness
-                // This field is always indexed and can be reliably used for updates
                 doc.add(new org.apache.lucene.document.StringField(
                     "_uid", docId, org.apache.lucene.document.Field.Store.YES));
-
-                // Use _uid field for document replacement
                 indexWriter.updateDocument(new Term("_uid", docId), doc);
             } else {
-                // No ID found, just add document
                 indexWriter.addDocument(doc);
             }
 

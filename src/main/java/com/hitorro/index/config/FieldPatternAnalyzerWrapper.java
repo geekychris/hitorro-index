@@ -130,19 +130,24 @@ public class FieldPatternAnalyzerWrapper extends DelegatingAnalyzerWrapper {
     private Analyzer getAnalyzerForPattern(FieldPattern fp) {
         switch (fp.analyzerType) {
             case "text":
-            case "textmarkup":
-                // Use language-specific analyzer
+                // Use language-specific analyzer for plain text fields
                 if (fp.language != null) {
                     return LuceneAnalyzerRegistry.getLanguageAnalyzer(fp.language);
                 }
                 break;
-                
+
+            case "textmarkup":
+                // Use the NER markup analyzer for textmarkup fields.
+                // This handles XML entity tags (<person>, <organization>, etc.)
+                // and rewrites them to NE_Person, NE_Organization tokens.
+                return LuceneAnalyzerRegistry.getTypeAnalyzer("textmarkup");
+
             case "identifier":
             case "keyword":
                 // Use keyword analyzer (no tokenization)
                 return LuceneAnalyzerRegistry.getTypeAnalyzer("identifier");
         }
-        
+
         return null;
     }
     

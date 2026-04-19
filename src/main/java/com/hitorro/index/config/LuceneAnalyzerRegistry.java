@@ -107,7 +107,7 @@ public class LuceneAnalyzerRegistry {
 
         // Initialize type-specific analyzers
         typeAnalyzers.put("text", new StandardAnalyzer());
-        typeAnalyzers.put("textmarkup", new StandardAnalyzer());
+        typeAnalyzers.put("textmarkup", new com.hitorro.index.analysis.NERMarkupAnalyzer());
         typeAnalyzers.put("identifier", new KeywordAnalyzer());
         typeAnalyzers.put("long", new KeywordAnalyzer());
         typeAnalyzers.put("int", new KeywordAnalyzer());

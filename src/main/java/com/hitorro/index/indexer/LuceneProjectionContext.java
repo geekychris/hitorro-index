@@ -63,6 +63,13 @@ public class LuceneProjectionContext extends ProjectionContext {
             return;
         }
 
+        // Convert XML NER tags to bracket format for textmarkup fields.
+        // This must happen BEFORE the analyzer sees the text (not in a CharFilter)
+        // to avoid offset mapping issues.
+        if (fieldName.contains(".textmarkup_")) {
+            textValue = com.hitorro.index.analysis.XMLToNERBracketCharFilter.convert(textValue);
+        }
+
         // Determine if this is a multi-valued field based on field name suffix
         boolean isMultiValued = fieldName.endsWith("_m");
 

@@ -238,7 +238,28 @@ public class JVSQueryParser extends QueryParser {
         }
 
         if (group == null) {
-            return null;
+            // The field itself has no index group. Try to find an indexed
+            // child field. This handles cases like "title.mls" which is a
+            // container (core_mls) whose children (core_mlselem fields like
+            // "clean", "text") have the actual index groups.
+            // Default to "clean" for MLS fields, falling back to first indexed child.
+            Type fieldType = field.getType();
+            if (fieldType != null) {
+                // Try "clean" first (normalized text — the standard search field for MLS)
+                String[] preferredChildren = {"clean", "text"};
+                for (String childName : preferredChildren) {
+                    Propaccess childAccess = new Propaccess(baseFieldPath + "." + childName);
+                    Group childGroup = type.getDefaultGroupFor(childAccess, "index");
+                    if (childGroup != null) {
+                        baseAccess = childAccess;
+                        group = childGroup;
+                        break;
+                    }
+                }
+            }
+            if (group == null) {
+                return null;
+            }
         }
 
         String method = group.getMethod();

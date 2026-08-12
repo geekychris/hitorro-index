@@ -23,12 +23,12 @@ package com.hitorro.index.config;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.hitorro.util.basefile.Name2JsonMapper;
-import com.hitorro.util.core.Env;
 import com.hitorro.util.core.events.cache.HashCache;
 import com.hitorro.util.core.events.cache.SingletonCache;
 import com.hitorro.util.core.iterator.Mapper;
 import com.hitorro.util.json.keys.JsonInitableProperty;
 import com.hitorro.util.json.keys.MapProperty;
+import com.hitorro.util.basefile.tools.EnvBaseFiles;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -74,7 +74,7 @@ public class LuceneFieldTypes {
             HashCache<String, JsonNode> luceneFieldTypesConfig =
                     new HashCache<>(0, true,
                             null, "luceneconfig",
-                            new Name2JsonMapper(Env.getBinConfigBaseFile().getChild("jsonconfigs"), "lucene"));
+                            new Name2JsonMapper(EnvBaseFiles.getBinConfigBaseFile().getChild("jsonconfigs"), "lucene"));
             
             JsonNode node = luceneFieldTypesConfig.get("lucene_fields");
             if (node != null) {

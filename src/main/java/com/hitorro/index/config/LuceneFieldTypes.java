@@ -44,8 +44,10 @@ public class LuceneFieldTypes {
     public static JsonInitableProperty<LuceneFieldType> LuceneFieldTypeKey = 
             new JsonInitableProperty("", "", null, LuceneFieldType.class, LuceneFieldType.class);
 
-    public static MapProperty<String, LuceneFieldType> LuceneFields = 
-            LuceneFieldTypeKey.mapProperty("fields", "", null, LuceneFieldType.Name);
+    public static MapProperty<String, LuceneFieldType> LuceneFields =
+            new MapProperty<String, LuceneFieldType>(
+                    new com.hitorro.util.json.keys.propaccess.Propaccess("fields"),
+                    "", null, LuceneFieldTypeKey, LuceneFieldType.Name);
 
     protected Map<String, LuceneFieldType> map = new HashMap<>();
 

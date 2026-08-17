@@ -65,7 +65,7 @@ public class LuceneFieldTypes {
         }
         return instance;
     }
-    
+
     /**
      * Load configuration from JSON file.
      * Fails gracefully if configuration is not available (e.g., in test environments).
@@ -77,16 +77,58 @@ public class LuceneFieldTypes {
                     new HashCache<>(0, true,
                             null, "luceneconfig",
                             new Name2JsonMapper(EnvBaseFiles.getBinConfigBaseFile().getChild("jsonconfigs"), "lucene"));
-            
+
             JsonNode node = luceneFieldTypesConfig.get("lucene_fields");
             if (node != null) {
-                map = LuceneFields.apply(node);
+                loadFrom(node);
             }
         } catch (Throwable t) {
             // Configuration not available - use empty map
             // This can happen in test environments without full Hitorro setup
             // Tests that don't use type-based projection will work fine
         }
+    }
+
+    /**
+     * Populate the registry from an already-parsed JSON node. Handles both
+     * shapes the config has appeared in over time:
+     * <ul>
+     *   <li>{@code {"fields": {"identifier": {...}, "text": {...}}}} —
+     *       the current shipped {@code lucene_fields.json} shape.</li>
+     *   <li>{@code {"fields": [{"name": "identifier", ...}]}} — the
+     *       array shape assumed by the {@link MapProperty}-based loader.</li>
+     * </ul>
+     *
+     * <p>Public so callers that already have the node in hand (index sinks,
+     * standalone tests, application bootstrap) can drive initialization
+     * directly and don't need to hit {@code EnvBaseFiles} or hack around
+     * the shipped loader's object-shape gap.</p>
+     */
+    public synchronized void loadFrom(JsonNode node) {
+        if (node == null || !node.has("fields")) return;
+        JsonNode fields = node.get("fields");
+        Map<String, LuceneFieldType> loaded = new HashMap<>();
+        if (fields.isArray()) {
+            // {"fields": [{"name": "identifier", ...}, ...]}
+            var it = fields.elements();
+            while (it.hasNext()) {
+                JsonNode entry = it.next();
+                LuceneFieldType lft = new LuceneFieldType();
+                lft.init(entry);
+                String name = entry.has("name") ? entry.get("name").asText() : null;
+                if (name != null) loaded.put(name, lft);
+            }
+        } else if (fields.isObject()) {
+            // {"fields": {"identifier": {...}, ...}}
+            var it = fields.fields();
+            while (it.hasNext()) {
+                var entry = it.next();
+                LuceneFieldType lft = new LuceneFieldType();
+                lft.init(entry.getValue());
+                loaded.put(entry.getKey(), lft);
+            }
+        }
+        if (!loaded.isEmpty()) map = loaded;
     }
 
     public LuceneFieldType get(String name) {

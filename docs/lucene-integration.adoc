@@ -1,0 +1,480 @@
+= Lucene Integration
+:toc: left
+:toclevels: 3
+:sectnums:
+:source-highlighter: rouge
+
+`hitorro-index` wraps Apache Lucene 9.x with a JVS-aware indexer,
+searcher, and analyzer registry. Every field lands in the RIGHT Lucene
+field type based on its `Group.method` — no scattered per-caller
+Lucene wiring.
+
+Related:
+xref:../../hitorro-jsontypesystem/docs/jvs-types.adoc[JVS Types] ·
+xref:../../hitorro-retrieval/docs/retrieval-pipeline.adoc[Retrieval] ·
+xref:../../hitorro-mesh-pipelines/docs/pipeline-framework.adoc[Pipeline]
+
+== Overview
+
+....
+JVS(doc, type)
+   │
+   ▼
+JVSLuceneIndexWriter.indexDocument(jvs)
+   │  runs IndexExecutionBuilder projection over doc's type
+   │  per field: emit appropriate Lucene field(s) based on Group.method
+   ▼
+IndexWriter.addDocument(luceneDoc)
+   │
+   ▼
+FSDirectory ──▶ files on disk
+
+── searcher side ──
+
+Query string ─── QueryParser (with JVSLuceneAnalyzer) ───▶ Query
+                                                          │
+                                                          ▼
+                                                 IndexSearcher.search
+                                                          │
+                                                          ▼
+                                                 SearchResult (hits, facets, _source?)
+....
+
+== The projection path
+
+For each `JVS` document, the index projection walks the type tree
+(via `ExecutionBuilder`) and emits Lucene fields based on each
+`Group.method`:
+
+[cols="2,3,4", options="header"]
+|===
+| method       | Lucene field                                             | Query-time behavior
+| `identifier` | `StringField(name, value, Store.NO)`                     | exact match, term aggregates
+| `text`       | `TextField(name, value, Store.NO)` + language analyzer   | full-text, stemming, stopwords
+| `long`       | `LongPoint(name, value)` + `SortedNumericDocValues`      | range queries, sort, agg
+| `double`     | `DoublePoint(name, value)` + `SortedNumericDocValues`    | range queries, sort, agg
+| `boolean`    | `StringField(name, "true"\|"false")`                     | exact filter
+| `mls`        | Iterates `mls[]`; per lang emits `<name>_<lang>` variant | multi-lang search
+| `key_term`   | Analyzed lowercased, preserves case in stored form       | facet-friendly text
+| `geo`        | `LatLonPoint` + `LatLonDocValuesField`                   | geo distance query + sort
+| `dates`      | Two `LongPoint`s (created, modified) + ISO stored        | range + sort by timestamp
+|===
+
+Recognized field types live in `LuceneFieldTypes` — a singleton loaded
+from `$HT_BIN/config/jsonconfigs/lucene/lucene_fields.json`. Extend by
+adding entries to that file (the loader handles both array-of-entries
+and name-keyed-object shapes — see `LuceneFieldTypes.loadFrom`).
+
+== `storeSource(true)` vs `storeSource(false)`
+
+Mutually exclusive index modes:
+
+`storeSource(true)`::
+  The entire JVS JSON gets stored as `_source` in each Lucene doc.
+  Search hits carry the full document — one-round-trip retrieval.
+  Best for smallish documents or when you don't have a KV store.
+
+`storeSource(false)`::
+  Only the projected typed fields land in the index — no `_source`.
+  Good for search + faceting on fields you know about, but nested
+  structures (sentences[], pos_counters{}, mls[] internals) aren't
+  in the index. Round-trip retrieval: search returns hit + key,
+  caller fetches the full JVS from a KV store (see
+  `DocumentRetriever` in `hitorro-retrieval`).
+
+The mesh's typed pipelines usually use `storeSource: false` +
+`kvstore` sink together — the index handles fast search, the KV store
+handles rich fetch.
+
+== Writer — JVSLuceneIndexWriter
+
+Basic use:
+
+[source,java]
+----
+IndexConfig cfg = IndexConfig.builder()
+        .filesystem(indexDir)        // e.g. /var/data/lucene/articles
+        .storeSource(false)          // KV-backed retrieval
+        .build();
+
+try (JVSLuceneIndexWriter writer = new JVSLuceneIndexWriter(cfg)) {
+    for (JVS doc : docs) {
+        writer.indexDocument(doc);   // routes per-Group.method
+    }
+    writer.commit();                 // fsync
+}
+----
+
+Batch shape:
+
+[source,java]
+----
+writer.indexDocuments(docs);         // single addDocuments() call
+writer.indexDocuments(docs, sources); // pair with per-doc source JSON when storeSource=true
+----
+
+With an embedding:
+
+[source,java]
+----
+float[] embedding = model.embed(doc.getText("body.mls[0].clean"));
+writer.indexDocument(doc, embedding); // emits KnnFloatVectorField
+----
+
+Higher-level: use `IndexManager` (owns multiple named indexes) — one
+`createIndex(name, cfg, type)` per index, one `commit(name)` /
+`close(name)` per lifecycle event. This is what mesh pipeline sinks
+(`JvsLuceneSink`) use.
+
+Real code:
+`hitorro-mesh-pipelines-jvstype/src/main/java/.../JvsLuceneSink.java`.
+
+== Searcher — JVSLuceneSearcher
+
+[source,java]
+----
+try (JVSLuceneSearcher s = new JVSLuceneSearcher(cfg, type, /* default lang */ "en")) {
+    SearchResult r = s.search("London Heathrow", 0, 20);
+    // Or with facets:
+    r = s.search("London", 0, 20, List.of("country", "category"));
+    // Or per-request lang:
+    r = s.search("London", 0, 20, List.of(), "en");
+}
+----
+
+`SearchResult` carries:
+
+* `hits[]` — one per matching document with `_uid`, `_score`, all
+  projected fields, and `_source` if `storeSource(true)`
+* `totalHits` — total matching before pagination
+* `facets{dim → {value → count}}` — populated when facet dims requested
+* `searchTimeMs`
+
+The searcher uses `LuceneAnalyzerRegistry.getLanguageAnalyzer(lang)`
+for query parsing, so a query with `lang: "en"` gets `EnglishAnalyzer`
+(stemming, stopwords) — same chain used at index time.
+
+== Analyzer registry
+
+`LuceneAnalyzerRegistry` is a singleton with per-language and
+per-field-type analyzer chains. Shipped languages:
+
+....
+ar, bg, ca, cs, da, de, el, en, es, eu, fa, fi, fr, ga, gl, hi,
+hu, hy, id, it, ja, ko, lt, lv, nl, no, pl, pt, ro, ru, sv, th,
+tr, uk, zh
+....
+
+Fall-through: unknown lang → `StandardAnalyzer` (whitespace + lowercase).
+
+Per-field-type:
+
+* `identifier` → `KeywordAnalyzer` (no tokenization)
+* `text` → routed to `getLanguageAnalyzer(<lang>)`
+* `pos`, `segmented_ner` → `WhitespaceAnalyzer` (preserve `word_TAG` /
+  `<LOCATION>...</LOCATION>` markers verbatim)
+
+Override in-flight:
+
+[source,java]
+----
+LuceneAnalyzerRegistry.registerLanguageAnalyzer("xx", new MyCustomAnalyzer());
+LuceneAnalyzerRegistry.registerTypeAnalyzer("custom_type", new SomethingElse());
+----
+
+`FieldPatternAnalyzerWrapper` layers on top — routes analyzers by
+field name regex when the type-based routing isn't specific enough
+(e.g. `.*\.pos$` → whitespace, `.*` → language default).
+
+== Extending — add a Lucene field type
+
+Say you want a case-sensitive `keyword` variant for exact-match on
+proper nouns:
+
+**Step 1** — add to `$HT_BIN/config/jsonconfigs/lucene/lucene_fields.json`:
+
+[source,json]
+----
+{
+  "fields": {
+    ...existing types...,
+    "keyword_cs": {
+      "storedField": true,
+      "indexed": true,
+      "analyzed": false,
+      "docValues": true,
+      "sortable": true
+    }
+  }
+}
+----
+
+**Step 2** — reference from a Group:
+
+[source,json]
+----
+{
+  "name": "index",
+  "method": "keyword_cs"
+}
+----
+
+**Step 3** — extend `IndexerAction` (in `hitorro-index/src/main/java/…/indexer/`)
+to know how to map `keyword_cs` to a Lucene `StringField` variant if it isn't already.
+
+The shipped types cover 99% of use cases. Custom types only when the
+existing methods don't match the query pattern you need.
+
+== Extending — add an analyzer
+
+Registering a custom analyzer at startup:
+
+[source,java]
+----
+@Configuration
+public class MyAnalyzerConfig {
+    @Bean
+    public ApplicationRunner registerAnalyzers() {
+        return args -> {
+            LuceneAnalyzerRegistry.registerLanguageAnalyzer(
+                    "brand", new MyBrandNamePreservingAnalyzer());
+        };
+    }
+}
+----
+
+Or from a plain-Java bootstrap (no Spring):
+
+[source,java]
+----
+static {
+    LuceneAnalyzerRegistry.registerLanguageAnalyzer("brand", new MyBrandAnalyzer());
+}
+----
+
+== ReadOnlyIndexService — shared read across processes
+
+Lucene `IndexWriter` takes an exclusive `write.lock`. If pipeline
+writers are still running when a reader wants to open the same index,
+`LockObtainFailedException`. Solution: read-only mode via
+`DirectoryReader.open(FSDirectory)` — no `write.lock`, doesn't fight
+the writer, but you have to periodically call `refresh()` to see new
+commits.
+
+`com.hitorro.index.readonly.ReadOnlyIndexService` wraps this pattern.
+Standalone use:
+
+[source,java]
+----
+import com.hitorro.index.readonly.ReadOnlyIndexService;
+import com.hitorro.index.search.JVSLuceneSearcher;
+import com.hitorro.index.search.SearchResult;
+
+try (var svc = new ReadOnlyIndexService("en")) {
+    JVSLuceneSearcher searcher = svc.openOrGet("articles",
+            Path.of("./data/lucene/articles"));
+    SearchResult r = searcher.search("London Heathrow", 0, 20);
+
+    // Later — pull in new commits from the writer
+    svc.refresh("articles");
+}
+----
+
+Spring Boot bean:
+
+[source,java]
+----
+@Configuration
+public class SearchConfig {
+
+    @Bean(destroyMethod = "close")
+    public ReadOnlyIndexService indexes(@Value("${lucene.lang:en}") String lang) {
+        return new ReadOnlyIndexService(lang);
+    }
+}
+
+@RestController
+@RequestMapping("/api/search")
+public class SearchController {
+
+    private final ReadOnlyIndexService indexes;
+    private final Path indexRoot;
+
+    public SearchController(ReadOnlyIndexService indexes,
+                            @Value("${lucene.root}") String root) {
+        this.indexes = indexes;
+        this.indexRoot = Path.of(root);
+    }
+
+    @GetMapping("/{index}")
+    public SearchResult search(@PathVariable("index") String index,
+                               @RequestParam String q,
+                               @RequestParam(defaultValue = "20") int limit) throws Exception {
+        JVSLuceneSearcher s = indexes.openOrGet(index, indexRoot.resolve(index));
+        indexes.refresh(index);
+        return s.search(q, 0, limit);
+    }
+}
+----
+
+Use this pattern when your reader lifecycle is longer than your
+writer's commit cadence — dashboards, retrieval services, standalone
+search tools. `hitorro-fleet-retrieval` uses exactly this to serve
+searches alongside a running pipeline writer.
+
+== JvsLuceneSink + LuceneSink — direct standalone use
+
+Both live in `hitorro-index` — no mesh dep required.
+
+**Type-aware ingest** (recommended when you have a JVS Type):
+
+[source,java]
+----
+import com.hitorro.util.core.iterator.sinks.index.JvsLuceneSink;
+
+try (var sink = new JvsLuceneSink(
+        /*name*/         "articles",
+        /*type resource*/ "classpath:/types/demo_article.json",
+        /*storeSource*/   false,
+        /*home*/          Path.of("./data/pipelines"))) {
+    sink.start();
+    for (JsonNode row : incomingArticles) {
+        sink.add(row);
+    }
+    System.out.println("indexed " + sink.count() + " articles");
+}
+----
+
+Each row is wrapped as a `JVS` with the loaded Type and projected via
+`JVSLuceneIndexWriter` — every field lands in the right Lucene field
+type per its Group's `method`. Physical index at
+`./data/pipelines/lucene/articles/`.
+
+**Schema-less ingest** (no Type — every scalar top-level field becomes
+a `StringField`, everything joined into a `_text` catch-all):
+
+[source,java]
+----
+import com.hitorro.util.core.iterator.sinks.index.LuceneSink;
+
+try (var sink = new LuceneSink("airports", /*storeSource*/ true, Path.of("./data"))) {
+    sink.start();
+    for (JsonNode row : rows) sink.add(row);
+}
+----
+
+Spring Boot bean:
+
+[source,java]
+----
+@Configuration
+public class IndexingConfig {
+
+    @Bean(destroyMethod = "close")
+    public Sink<JsonNode> articleIndexer(
+            @Value("${index.root}") String root) throws IOException {
+        var sink = new JvsLuceneSink("articles",
+                "classpath:/types/demo_article.json",
+                /*storeSource*/ false,
+                Path.of(root));
+        sink.start();
+        return sink;
+    }
+}
+----
+
+Then in a service or endpoint:
+
+[source,java]
+----
+@Service
+public class ArticleService {
+    private final Sink<JsonNode> indexer;
+    public ArticleService(@Qualifier("articleIndexer") Sink<JsonNode> indexer) {
+        this.indexer = indexer;
+    }
+    public void ingest(JsonNode article) throws Exception {
+        indexer.add(article);
+    }
+}
+----
+
+== LuceneSearchSource — iterate hits as JSON
+
+`com.hitorro.util.core.iterator.sources.index.LuceneSearchSource`
+iterates matching documents from a Lucene index as `JsonNode` rows.
+Any streams pipeline can use it as a source:
+
+[source,java]
+----
+import com.hitorro.util.core.iterator.sources.index.LuceneSearchSource;
+
+Path indexDir = Path.of("./data/lucene/airports");
+try (var source = new LuceneSearchSource(indexDir, "heathrow")) {
+    while (source.hasNext()) {
+        JsonNode row = source.next();
+        System.out.println(row);
+    }
+}
+----
+
+Null/empty query means `MatchAllDocsQuery` — a "scan the whole index"
+source.
+
+== Mesh pipeline usage (YAML config)
+
+[source,yaml]
+----
+sinks:
+  # Type-aware (recommended)
+  - kind: jvs-lucene
+    name: articles
+    typeJsonResource: "classpath:/types/demo_article.json"
+    storeSource: false
+
+  # Schema-less (no JVS Type needed)
+  - kind: lucene
+    name: airports
+    storeSource: true
+
+# Read side:
+source:
+  kind: lucene
+  name: articles
+  query: "heathrow"
+----
+
+== Debugging
+
+Empty search results::
+  Confirm the doc is actually in the index —
+  `IndexSearcher.getIndexReader().numDocs()` should be > 0. If it's 0
+  but writes happened, the writer probably didn't `commit()`.
+
+`LuceneFieldType not registered for method X`::
+  The type's Group references a `method` your `lucene_fields.json`
+  doesn't declare. Either add it there or use one of the shipped
+  methods.
+
+Wrong analyzer at query time::
+  `lang` argument to `search()` picks the analyzer. If you're passing
+  none, the searcher's constructor `defaultLang` is used.
+
+Search hits contain no fields::
+  Almost always `storeSource(false)` with no per-field `Store.YES`
+  overrides. Either flip to `storeSource(true)` or use a
+  `DocumentRetriever` (in `hitorro-retrieval`) to KV-fetch the full doc.
+
+Analyzer chain not being applied::
+  The searcher uses its own analyzer routing; the writer uses
+  `IndexWriterConfig`'s analyzer. If you customize one but not the
+  other, terms don't match. Prefer wiring analyzers through
+  `LuceneAnalyzerRegistry` — both writer and searcher pull from it.
+
+== Where to read more
+
+* Source: `hitorro-index/src/main/java/com/hitorro/index/`
+* xref:../../hitorro-retrieval/docs/retrieval-pipeline.adoc[Retrieval Pipeline] — how search fits into a retrieval flow
+* xref:../../hitorro-jsontypesystem/docs/jvs-types.adoc[JVS Types] — the Group.method → Lucene field type mapping
+* Apache Lucene 9.11 https://lucene.apache.org/core/9_11_1/[docs]
+* Lucene analyzers common: https://lucene.apache.org/core/9_11_1/analysis/common/index.html

@@ -25,7 +25,7 @@ import java.util.Queue;
  *
  * <p>Preserves offsets from the upstream tokenizer to avoid Lucene offset errors.
  */
-public class NERMarkupTokenFilter extends TokenFilter {
+public final class NERMarkupTokenFilter extends TokenFilter {
 
     private final CharTermAttribute termAtt = addAttribute(CharTermAttribute.class);
     private final KeywordAttribute keywordAtt = addAttribute(KeywordAttribute.class);

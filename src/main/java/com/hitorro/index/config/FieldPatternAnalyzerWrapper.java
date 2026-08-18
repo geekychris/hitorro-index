@@ -137,9 +137,15 @@ public class FieldPatternAnalyzerWrapper extends DelegatingAnalyzerWrapper {
                 break;
 
             case "textmarkup":
-                // Use the NER markup analyzer for textmarkup fields.
-                // This handles XML entity tags (<person>, <organization>, etc.)
-                // and rewrites them to NE_Person, NE_Organization tokens.
+                // Use the language-aware NER markup analyzer for
+                // textmarkup fields. Handles the entity-bracket
+                // extraction ([{term&&NE_Type}] → term + NE_Type at
+                // same position) AND applies the language stemmer so
+                // text_XX_m and textmarkup_XX_m produce identical
+                // terms for bracket-free input.
+                if (fp.language != null) {
+                    return new com.hitorro.index.analysis.NERMarkupLanguageAnalyzer(fp.language);
+                }
                 return LuceneAnalyzerRegistry.getTypeAnalyzer("textmarkup");
 
             case "identifier":

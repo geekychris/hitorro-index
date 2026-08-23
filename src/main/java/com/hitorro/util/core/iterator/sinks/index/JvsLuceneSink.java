@@ -56,6 +56,17 @@ public final class JvsLuceneSink extends JsonNodeSinkBase {
     public boolean storeSource()  { return storeSource; }
     public Path indexDir()        { return indexDir; }
 
+    /**
+     * Sidecar filename used to persist the JVS type JSON alongside the
+     * Lucene index. Read back at query time so tools like
+     * {@code LuceneSearchService} can construct a {@code JVSQueryParser}
+     * and rewrite logical field paths (e.g. {@code body.mls.segmented_ner})
+     * into the physical projected Lucene names
+     * ({@code body.mls.segmented_ner.textmarkup_en_m}). Dot-prefix keeps
+     * Lucene's segment scan from mistaking it for a segment file.
+     */
+    public static final String TYPE_SIDECAR = ".jvs-type.json";
+
     @Override
     public boolean start() throws IOException {
         Files.createDirectories(indexDir);
@@ -74,6 +85,18 @@ public final class JvsLuceneSink extends JsonNodeSinkBase {
         }
         this.type = new Type();
         this.type.init(typeJson);
+
+        // Persist the loaded type JSON as a sidecar so any downstream
+        // reader (search service, admin tool) can rehydrate the Type
+        // and use JVSQueryParser without needing to know which
+        // typeJsonResource the sink was configured with. Best-effort —
+        // failure here shouldn't block indexing.
+        try {
+            new ObjectMapper().writerWithDefaultPrettyPrinter()
+                    .writeValue(indexDir.resolve(TYPE_SIDECAR).toFile(), typeJson);
+        } catch (IOException e) {
+            System.err.println("[JvsLuceneSink] write type sidecar failed: " + e);
+        }
 
         IndexConfig cfg = IndexConfig.builder()
                 .filesystem(indexDir)

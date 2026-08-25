@@ -28,6 +28,12 @@ import java.util.Map;
 
 /**
  * Encapsulates search results including documents, metadata, and facets.
+ *
+ * <p>Optional {@code sourceAggregates} slot carries merged
+ * aggregate JVS documents (typed as {@link JVS} to avoid a compile-time
+ * dependency on the retrieval module's aggregate types). Populated only
+ * by the coordinator's multi-index merger; single-index paths leave it
+ * null and downstream consumers ignore it.</p>
  */
 public class SearchResult {
     private final List<JVS> documents;
@@ -37,6 +43,9 @@ public class SearchResult {
     private final int offset;
     private final int limit;
     private final long searchTimeMs;
+    /** Merged per-source aggregates emitted by the cross-index merger.
+     *  Null for single-index searches. */
+    private final List<JVS> sourceAggregates;
 
     private SearchResult(Builder builder) {
         this.documents = builder.documents;
@@ -46,6 +55,7 @@ public class SearchResult {
         this.offset = builder.offset;
         this.limit = builder.limit;
         this.searchTimeMs = builder.searchTimeMs;
+        this.sourceAggregates = builder.sourceAggregates;
     }
 
     public List<JVS> getDocuments() {
@@ -74,6 +84,16 @@ public class SearchResult {
 
     public long getSearchTimeMs() {
         return searchTimeMs;
+    }
+
+    /** Merged per-source aggregate JVSes, or null when this is a
+     *  single-index SearchResult (no merger involved). */
+    public List<JVS> getSourceAggregates() {
+        return sourceAggregates;
+    }
+
+    public boolean hasSourceAggregates() {
+        return sourceAggregates != null && !sourceAggregates.isEmpty();
     }
 
     public boolean hasFacets() {
@@ -125,9 +145,18 @@ public class SearchResult {
         private int offset;
         private int limit;
         private long searchTimeMs;
+        private List<JVS> sourceAggregates;
 
         public Builder documents(List<JVS> documents) {
             this.documents = documents;
+            return this;
+        }
+
+        /** Merged aggregates emitted alongside the doc list — one
+         *  entry per aggregate type (summary, facets, ai_summary, …).
+         *  Cross-index merger populates; other callers leave null. */
+        public Builder sourceAggregates(List<JVS> sourceAggregates) {
+            this.sourceAggregates = sourceAggregates;
             return this;
         }
 

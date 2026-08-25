@@ -36,6 +36,9 @@ import org.apache.lucene.facet.sortedset.DefaultSortedSetDocValuesReaderState;
 import org.apache.lucene.facet.sortedset.SortedSetDocValuesFacetCounts;
 import org.apache.lucene.facet.sortedset.SortedSetDocValuesReaderState;
 import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.DocValuesType;
+import org.apache.lucene.index.FieldInfo;
+import org.apache.lucene.index.FieldInfos;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.search.*;
@@ -129,6 +132,26 @@ public class JVSLuceneSearcher implements AutoCloseable {
      */
     public SearchResult search(String queryString, int offset, int limit, List<String> facetDims, String lang)
             throws IOException, ParseException {
+        return search(queryString, offset, limit, facetDims, lang, null);
+    }
+
+    /**
+     * Search with faceting, language, AND an optional Lucene {@link Sort}.
+     *
+     * <p>When {@code sort} is non-null the underlying {@link IndexSearcher}
+     * is called via {@code search(query, n, sort)} so top-N scoring runs
+     * against the sort comparator instead of the default score order.
+     * When {@code sort} is null the behaviour is byte-identical to the
+     * pre-sort search — score-descending, no comparator overhead.</p>
+     *
+     * <p>Callers upstream (retrieval layer) speak in {@code SortCriteria}
+     * chains; {@link #buildLuceneSort(String[], boolean[])} is exposed as
+     * a helper so those callers can build a {@link Sort} without repeating
+     * the DocValues-type resolution logic.</p>
+     */
+    public SearchResult search(String queryString, int offset, int limit, List<String> facetDims,
+                               String lang, Sort sort)
+            throws IOException, ParseException {
         long startTime = System.currentTimeMillis();
 
         String effectiveLang = (lang != null && !lang.isEmpty()) ? lang : defaultLang;
@@ -137,8 +160,10 @@ public class JVSLuceneSearcher implements AutoCloseable {
         JVSQueryParser parser = new JVSQueryParser(type, "content", analyzer, effectiveLang);
         Query query = parser.parse(queryString);
 
-        // Execute search
-        TopDocs topDocs = searcher.search(query, offset + limit);
+        // Execute search — sorted or default score-order.
+        TopDocs topDocs = sort != null
+                ? searcher.search(query, offset + limit, sort)
+                : searcher.search(query, offset + limit);
         long totalHits = topDocs.totalHits.value;
 
         // Collect documents
@@ -789,6 +814,114 @@ public class JVSLuceneSearcher implements AutoCloseable {
      */
     public IndexSearcher getIndexSearcher() {
         return searcher;
+    }
+
+    /**
+     * Build a Lucene {@link Sort} for the given (field, reverse) pairs
+     * by inspecting each field's {@link DocValuesType} on this reader.
+     * Callers upstream have the field/direction shape from a
+     * {@code SortCriteria} chain and just need the right {@link SortField}
+     * flavour per field.
+     *
+     * <p>Type mapping:</p>
+     * <ul>
+     *   <li>{@code _score} — {@code SortField.Type.SCORE} (with the
+     *       {@code reverse} flag applied as-given, so a caller who asks
+     *       for ASC gets ascending score even though it's rarely useful).</li>
+     *   <li>{@code NUMERIC} DocValues → {@code SortField.Type.LONG}.
+     *       Fits date-epoch-ms + long/int fields the JVS type system
+     *       encodes as {@code NumericDocValuesField}.</li>
+     *   <li>{@code SORTED_NUMERIC} → {@code SortedNumericSortField(LONG)}
+     *       — multi-valued numeric fields.</li>
+     *   <li>{@code SORTED} → {@code SortField.Type.STRING}.</li>
+     *   <li>{@code SORTED_SET} → {@code SortedSetSortField} — the shape
+     *       {@code LuceneProjectionContext} emits for identifier / string
+     *       fields, so this is the most common branch for string sort.</li>
+     * </ul>
+     *
+     * <p>Fields with {@code DocValuesType.NONE} (no docvalues indexed)
+     * are skipped with a WARN — sorting on them is impossible without
+     * an index rebuild. Returns {@code null} if the resulting sort would
+     * be empty, so the caller falls back to score order.</p>
+     *
+     * @param fields   sort field names, in comparator order (primary first)
+     * @param reverses per-field direction — {@code true} = descending
+     */
+    public Sort buildLuceneSort(String[] fields, boolean[] reverses) throws IOException {
+        if (fields == null || fields.length == 0) return null;
+        if (reverses == null || reverses.length != fields.length) {
+            throw new IllegalArgumentException("reverses[] must match fields[] length");
+        }
+        FieldInfos infos = FieldInfos.getMergedFieldInfos(reader);
+        List<SortField> out = new ArrayList<>(fields.length);
+        for (int i = 0; i < fields.length; i++) {
+            SortField sf = sortFieldFor(infos, fields[i], reverses[i]);
+            if (sf != null) out.add(sf);
+        }
+        if (out.isEmpty()) return null;
+        return new Sort(out.toArray(new SortField[0]));
+    }
+
+    private SortField sortFieldFor(FieldInfos infos, String field, boolean reverse) {
+        if ("_score".equals(field)) {
+            return new SortField(null, SortField.Type.SCORE, reverse);
+        }
+        // Logical JVS paths ("size_bytes", "times.date_received") get an
+        // index-type suffix appended at write time by LuceneProjectionContext
+        // (".long_s", ".long_m", ".string_s", …). Callers speak the
+        // logical path — resolve it to the physical field here, mirroring
+        // the facet-path resolver's "exact match, then startsWith" scan.
+        String resolved = resolveSortField(infos, field);
+        if (resolved == null) {
+            logger.warn("Field '{}' has no sortable DocValues on this index; skipping sort key", field);
+            return null;
+        }
+        FieldInfo fi = infos.fieldInfo(resolved);
+        DocValuesType dv = fi != null ? fi.getDocValuesType() : DocValuesType.NONE;
+        switch (dv) {
+            case NUMERIC:
+                return new SortField(resolved, SortField.Type.LONG, reverse);
+            case SORTED_NUMERIC:
+                return new SortedNumericSortField(resolved, SortField.Type.LONG, reverse);
+            case SORTED:
+                return new SortField(resolved, SortField.Type.STRING, reverse);
+            case SORTED_SET:
+                return new SortedSetSortField(resolved, reverse);
+            case BINARY:
+            case NONE:
+            default:
+                logger.warn("Field '{}' has no sortable DocValues ({}); skipping sort key",
+                        resolved, dv);
+                return null;
+        }
+    }
+
+    /**
+     * Turn a logical JVS field path into the physical Lucene field name
+     * that carries DocValues, by scanning {@link FieldInfos}:
+     * <ol>
+     *   <li>Exact match wins (already a physical name).</li>
+     *   <li>Otherwise look for a physical name that starts with
+     *       {@code logical + "."} — matches the ".long_s" / ".string_s" /
+     *       ".date_s" / etc. suffix scheme emitted by
+     *       {@code LuceneProjectionContext}.</li>
+     *   <li>Prefer physical names whose DocValuesType is not NONE, so we
+     *       don't accidentally pick a text field that has no docvalues
+     *       when a sibling docvalue-having field exists.</li>
+     * </ol>
+     * Returns null if nothing matches — caller falls back / drops the key.
+     */
+    private static String resolveSortField(FieldInfos infos, String logical) {
+        FieldInfo direct = infos.fieldInfo(logical);
+        if (direct != null && direct.getDocValuesType() != DocValuesType.NONE) return logical;
+        String prefix = logical + ".";
+        String fallback = null;
+        for (FieldInfo fi : infos) {
+            if (!fi.name.startsWith(prefix)) continue;
+            if (fi.getDocValuesType() != DocValuesType.NONE) return fi.name;
+            if (fallback == null) fallback = fi.name;   // physical but no DV — last resort
+        }
+        return fallback;
     }
 
     /**

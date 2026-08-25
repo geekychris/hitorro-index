@@ -34,6 +34,7 @@ import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.MultiReader;
 import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.Sort;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -237,9 +238,23 @@ public class IndexManager implements Closeable {
      */
     public SearchResult search(String indexName, String queryString, int offset, int limit,
                                List<String> facetDims, String lang) throws IOException, ParseException {
+        return search(indexName, queryString, offset, limit, facetDims, lang, null);
+    }
+
+    /**
+     * Search within a single index with an optional Lucene {@link Sort}.
+     * Retrieval-layer callers build the {@link Sort} via
+     * {@link JVSLuceneSearcher#buildLuceneSort(String[], boolean[])}
+     * (which resolves per-field {@code DocValuesType} against the
+     * refreshed reader) and pass it through here. A null sort keeps the
+     * default score-desc behaviour.
+     */
+    public SearchResult search(String indexName, String queryString, int offset, int limit,
+                               List<String> facetDims, String lang, Sort sort)
+            throws IOException, ParseException {
         IndexHandle handle = getRequiredIndex(indexName);
         handle.refreshSearcher();
-        return handle.getSearcher().search(queryString, offset, limit, facetDims, lang);
+        return handle.getSearcher().search(queryString, offset, limit, facetDims, lang, sort);
     }
     
     /**

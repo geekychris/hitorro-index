@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="Hitorro Index logo" width="180">
+</p>
+
 # Hitorro Lucene Index Integration
 
 Apache Lucene integration for the Hitorro JSON Type System (JVS), providing full-text search, fielded search, faceting, vector/hybrid search, and multi-language tokenization with streaming NDJson support.

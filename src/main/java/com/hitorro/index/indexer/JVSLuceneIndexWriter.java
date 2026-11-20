@@ -84,6 +84,15 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
      * @param jvs The JVS document to index
      * @throws IOException if indexing fails
      */
+    /**
+     * The stored {@code _source}: the document as compact JSON. Written with JsonMappers, not
+     * JsonNode.toString(): on Jackson 3 the latter throws past 500 nesting levels (Jackson 2 and
+     * JsonMappers: 1000).
+     */
+    private static String sourceJson(tools.jackson.databind.JsonNode node) {
+        return com.hitorro.util.json.JsonMappers.json().writeValueAsString(node);
+    }
+
     public void indexDocument(JVS jvs) throws IOException {
         indexDocument(jvs, null);
     }
@@ -106,7 +115,7 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
         // Store full document JSON as _source for faithful reconstruction in search results.
         // This happens AFTER ensureIdField so _source includes id.id.
         if (config.isStoreSource()) {
-            doc.add(new org.apache.lucene.document.StoredField("_source", jvs.getJsonNode().toString()));
+            doc.add(new org.apache.lucene.document.StoredField("_source", sourceJson(jvs.getJsonNode())));
         }
 
         lock.writeLock().lock();
@@ -254,7 +263,7 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
                 if (config.isStoreSource()) {
                     tools.jackson.databind.JsonNode sourceNode = (sourceDocs != null && i < sourceDocs.size())
                             ? sourceDocs.get(i) : jvs.getJsonNode();
-                    doc.add(new org.apache.lucene.document.StoredField("_source", sourceNode.toString()));
+                    doc.add(new org.apache.lucene.document.StoredField("_source", sourceJson(sourceNode)));
                 }
 
                 // Extract document ID and use update logic for each document

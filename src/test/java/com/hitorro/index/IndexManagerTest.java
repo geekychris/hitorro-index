@@ -21,8 +21,9 @@
  */
 package com.hitorro.index;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import tools.jackson.databind.ObjectMapper;
+import com.hitorro.util.json.JsonMappers;
+import tools.jackson.databind.node.ObjectNode;
 import com.hitorro.index.config.IndexConfig;
 import com.hitorro.index.search.SearchResult;
 import com.hitorro.jsontypesystem.JVS;
@@ -45,7 +46,7 @@ public class IndexManagerTest {
     @BeforeAll
     public static void setup() {
         manager = new IndexManager("en");
-        mapper = new ObjectMapper();
+        mapper = JsonMappers.json();
     }
     
     @AfterAll

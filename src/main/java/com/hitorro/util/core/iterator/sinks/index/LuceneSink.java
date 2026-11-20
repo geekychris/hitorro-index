@@ -3,8 +3,9 @@
  */
 package com.hitorro.util.core.iterator.sinks.index;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import com.hitorro.util.json.JsonMappers;
 import com.hitorro.util.core.iterator.sinks.JsonNodeSinkBase;
 import com.hitorro.util.io.StoreException;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
@@ -23,6 +24,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Iterator;
 import java.util.Map;
+import com.hitorro.util.json.JsonValues;
 
 /**
  * Schema-less Lucene index sink. Every scalar top-level field becomes a
@@ -39,7 +41,7 @@ import java.util.Map;
  */
 public final class LuceneSink extends JsonNodeSinkBase {
 
-    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final ObjectMapper JSON = JsonMappers.json();
 
     /**
      * Hidden Lucene field name for the exactly-once dedup key.
@@ -115,13 +117,13 @@ public final class LuceneSink extends JsonNodeSinkBase {
         Document doc = new Document();
         StringBuilder text = new StringBuilder();
         if (row.isObject()) {
-            Iterator<Map.Entry<String, JsonNode>> it = row.fields();
+            Iterator<Map.Entry<String, JsonNode>> it = row.properties().iterator();
             while (it.hasNext()) {
                 var e = it.next();
                 if (e.getValue().isNull()) continue;
                 if (e.getValue().isValueNode()) {
-                    doc.add(new StringField(e.getKey(), e.getValue().asText(), Field.Store.NO));
-                    text.append(e.getValue().asText()).append(' ');
+                    doc.add(new StringField(e.getKey(), JsonValues.asText(e.getValue()), Field.Store.NO));
+                    text.append(JsonValues.asText(e.getValue())).append(' ');
                 }
             }
         }

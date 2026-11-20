@@ -21,7 +21,7 @@
  */
 package com.hitorro.index.indexer;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import com.hitorro.index.config.LuceneFieldType;
 import com.hitorro.index.config.LuceneFieldTypes;
 import com.hitorro.jsontypesystem.Field;

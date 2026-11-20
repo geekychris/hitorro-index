@@ -3,8 +3,9 @@
  */
 package com.hitorro.util.core.iterator.sinks.index;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import com.hitorro.util.json.JsonMappers;
 import com.hitorro.index.IndexManager;
 import com.hitorro.index.config.IndexConfig;
 import com.hitorro.index.config.LuceneFieldTypes;
@@ -12,6 +13,7 @@ import com.hitorro.jsontypesystem.JVS;
 import com.hitorro.jsontypesystem.Type;
 import com.hitorro.jsontypesystem.resources.TypeJsonLoader;
 import com.hitorro.util.core.iterator.sinks.JsonNodeSinkBase;
+import tools.jackson.core.JacksonException;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -92,9 +94,9 @@ public final class JvsLuceneSink extends JsonNodeSinkBase {
         // typeJsonResource the sink was configured with. Best-effort —
         // failure here shouldn't block indexing.
         try {
-            new ObjectMapper().writerWithDefaultPrettyPrinter()
+            JsonMappers.json().writerWithDefaultPrettyPrinter()
                     .writeValue(indexDir.resolve(TYPE_SIDECAR).toFile(), typeJson);
-        } catch (IOException e) {
+        } catch (JacksonException e) {
             System.err.println("[JvsLuceneSink] write type sidecar failed: " + e);
         }
 
@@ -133,9 +135,9 @@ public final class JvsLuceneSink extends JsonNodeSinkBase {
         Path path = Path.of(bin, "config", "jsonconfigs", "lucene", "lucene_fields.json");
         if (!Files.exists(path)) return;
         try {
-            JsonNode node = new ObjectMapper().readTree(path.toFile());
+            JsonNode node = JsonMappers.json().readTree(path.toFile());
             lfts.loadFrom(node);
-        } catch (IOException e) {
+        } catch (JacksonException e) {
             System.err.println("[JvsLuceneSink] bootstrapLuceneFieldTypes failed: " + e);
         }
     }

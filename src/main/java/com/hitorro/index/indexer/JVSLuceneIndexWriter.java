@@ -21,7 +21,7 @@
  */
 package com.hitorro.index.indexer;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import com.hitorro.index.config.IndexConfig;
 import com.hitorro.index.embeddings.EmbeddingConfig;
 import com.hitorro.index.embeddings.EmbeddingFieldType;
@@ -46,6 +46,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import com.hitorro.util.json.JsonValues;
 
 /**
  * JVS-aware Lucene IndexWriter wrapper.
@@ -83,6 +84,15 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
      * @param jvs The JVS document to index
      * @throws IOException if indexing fails
      */
+    /**
+     * The stored {@code _source}: the document as compact JSON. Written with JsonMappers, not
+     * JsonNode.toString(): on Jackson 3 the latter throws past 500 nesting levels (Jackson 2 and
+     * JsonMappers: 1000).
+     */
+    private static String sourceJson(tools.jackson.databind.JsonNode node) {
+        return com.hitorro.util.json.JsonMappers.json().writeValueAsString(node);
+    }
+
     public void indexDocument(JVS jvs) throws IOException {
         indexDocument(jvs, null);
     }
@@ -105,7 +115,7 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
         // Store full document JSON as _source for faithful reconstruction in search results.
         // This happens AFTER ensureIdField so _source includes id.id.
         if (config.isStoreSource()) {
-            doc.add(new org.apache.lucene.document.StoredField("_source", jvs.getJsonNode().toString()));
+            doc.add(new org.apache.lucene.document.StoredField("_source", sourceJson(jvs.getJsonNode())));
         }
 
         lock.writeLock().lock();
@@ -139,8 +149,8 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
         try {
             // Skip if id.id already exists (e.g. from enrichment)
             Object existing = jvs.get("id.id");
-            if (existing != null && existing instanceof com.fasterxml.jackson.databind.JsonNode node
-                    && node.isTextual() && !node.asText().isEmpty()) {
+            if (existing != null && existing instanceof tools.jackson.databind.JsonNode node
+                    && node.isString() && !JsonValues.asText(node).isEmpty()) {
                 return;
             }
 
@@ -195,8 +205,8 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
 
             // Fallback to simple string id field
             Object idObj = jvs.get("id");
-            if (idObj != null && idObj instanceof JsonNode node && node.isTextual()) {
-                return node.asText();
+            if (idObj != null && idObj instanceof JsonNode node && node.isString()) {
+                return JsonValues.asText(node);
             }
         } catch (Exception e) {
             // ID not found or error accessing it
@@ -211,10 +221,10 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
     private String extractStringValue(Object obj) {
         if (obj instanceof JsonNode) {
             JsonNode node = (JsonNode) obj;
-            if (node.isTextual()) {
-                return node.asText();
+            if (node.isString()) {
+                return JsonValues.asText(node);
             }
-            return node.asText();
+            return JsonValues.asText(node);
         }
         if (obj instanceof String) {
             return (String) obj;
@@ -242,7 +252,7 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
      * @param sourceDocs    Optional clean documents for _source storage (same order as documents).
      *                      If null, uses the indexed documents themselves.
      */
-    public void indexDocuments(List<JVS> documents, List<com.fasterxml.jackson.databind.JsonNode> sourceDocs) throws IOException {
+    public void indexDocuments(List<JVS> documents, List<tools.jackson.databind.JsonNode> sourceDocs) throws IOException {
         lock.writeLock().lock();
         try {
             for (int i = 0; i < documents.size(); i++) {
@@ -251,9 +261,9 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
 
                 // Store _source: use clean source doc if provided, otherwise the indexed doc
                 if (config.isStoreSource()) {
-                    com.fasterxml.jackson.databind.JsonNode sourceNode = (sourceDocs != null && i < sourceDocs.size())
+                    tools.jackson.databind.JsonNode sourceNode = (sourceDocs != null && i < sourceDocs.size())
                             ? sourceDocs.get(i) : jvs.getJsonNode();
-                    doc.add(new org.apache.lucene.document.StoredField("_source", sourceNode.toString()));
+                    doc.add(new org.apache.lucene.document.StoredField("_source", sourceJson(sourceNode)));
                 }
 
                 // Extract document ID and use update logic for each document
@@ -569,7 +579,7 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
                 for (int i = 0; i < node.size(); i++) {
                     JsonNode element = node.get(i);
                     if (element.isNumber()) {
-                        floats[i] = (float) element.asDouble();
+                        floats[i] = (float) JsonValues.asDouble(element);
                     } else {
                         return null; // Invalid array element
                     }
@@ -605,22 +615,22 @@ public class JVSLuceneIndexWriter implements AutoCloseable {
         
         // Iterate through all fields in the JVS
         try {
-            com.fasterxml.jackson.databind.JsonNode root = jvs.getJsonNode();
+            tools.jackson.databind.JsonNode root = jvs.getJsonNode();
             if (root.isObject()) {
-                java.util.Iterator<String> fieldNames = root.fieldNames();
+                java.util.Iterator<String> fieldNames = root.propertyNames().iterator();
                 while (fieldNames.hasNext()) {
                     String fieldName = fieldNames.next();
-                    com.fasterxml.jackson.databind.JsonNode value = root.get(fieldName);
+                    tools.jackson.databind.JsonNode value = root.get(fieldName);
                     
                     if (value != null && !value.isNull()) {
-                        if (value.isTextual()) {
-                            doc.add(new org.apache.lucene.document.TextField(fieldName, value.textValue(), 
+                        if (value.isString()) {
+                            doc.add(new org.apache.lucene.document.TextField(fieldName, JsonValues.textValue(value), 
                                 org.apache.lucene.document.Field.Store.YES));
                         } else if (value.isNumber()) {
-                            doc.add(new org.apache.lucene.document.StringField(fieldName, value.asText(), 
+                            doc.add(new org.apache.lucene.document.StringField(fieldName, JsonValues.asText(value), 
                                 org.apache.lucene.document.Field.Store.YES));
                         } else {
-                            doc.add(new org.apache.lucene.document.TextField(fieldName, value.asText(), 
+                            doc.add(new org.apache.lucene.document.TextField(fieldName, JsonValues.asText(value), 
                                 org.apache.lucene.document.Field.Store.YES));
                         }
                     }

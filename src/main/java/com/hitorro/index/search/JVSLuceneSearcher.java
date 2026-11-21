@@ -21,8 +21,8 @@
  */
 package com.hitorro.index.search;
 
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import tools.jackson.databind.node.JsonNodeFactory;
+import tools.jackson.databind.node.ObjectNode;
 import com.hitorro.index.config.IndexConfig;
 import com.hitorro.index.embeddings.EmbeddingConfig;
 import com.hitorro.index.query.JVSQueryParser;
@@ -730,7 +730,7 @@ public class JVSLuceneSearcher implements AutoCloseable {
                     // Ensure id.id is on the reconstructed doc (may already be there from ensureIdField at index time)
                     try {
                         Object idId = jvs.get("id.id");
-                        if (idId == null || (idId instanceof com.fasterxml.jackson.databind.JsonNode n && n.isMissingNode())) {
+                        if (idId == null || (idId instanceof tools.jackson.databind.JsonNode n && n.isMissingNode())) {
                             jvs.set("id.id", uid);
                         }
                     } catch (Exception ignored) {}

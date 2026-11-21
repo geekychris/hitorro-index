@@ -191,7 +191,7 @@ public class IndexManager implements Closeable {
     /**
      * Index documents with separate clean source documents for _source storage.
      */
-    public void indexDocuments(String indexName, List<JVS> documents, List<com.fasterxml.jackson.databind.JsonNode> sourceDocs) throws IOException {
+    public void indexDocuments(String indexName, List<JVS> documents, List<tools.jackson.databind.JsonNode> sourceDocs) throws IOException {
         IndexHandle handle = getRequiredIndex(indexName);
         handle.getWriter().indexDocuments(documents, sourceDocs);
     }
@@ -357,7 +357,7 @@ public class IndexManager implements Closeable {
                     // Ensure id.id is present
                     try {
                         Object idId = jvs.get("id.id");
-                        if (idId == null || (idId instanceof com.fasterxml.jackson.databind.JsonNode n && n.isMissingNode())) {
+                        if (idId == null || (idId instanceof tools.jackson.databind.JsonNode n && n.isMissingNode())) {
                             jvs.set("id.id", uid);
                         }
                     } catch (Exception ignored) {}

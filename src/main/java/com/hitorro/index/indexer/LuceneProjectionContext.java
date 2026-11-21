@@ -21,7 +21,7 @@
  */
 package com.hitorro.index.indexer;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import com.hitorro.index.config.LuceneAnalyzerRegistry;
 import com.hitorro.index.config.LuceneFieldType;
 import com.hitorro.jsontypesystem.JVS;
@@ -31,6 +31,7 @@ import org.apache.lucene.facet.FacetField;
 import org.apache.lucene.facet.sortedset.SortedSetDocValuesFacetField;
 import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.util.BytesRef;
+import com.hitorro.util.json.JsonValues;
 
 /**
  * Context for projecting JVS documents to Lucene Documents.
@@ -122,10 +123,10 @@ public class LuceneProjectionContext extends ProjectionContext {
                     if (value.isNumber()) {
                         if (isMultiValued) {
                             // Multi-valued numeric field
-                            document.add(new SortedNumericDocValuesField(fieldName, value.asLong()));
+                            document.add(new SortedNumericDocValuesField(fieldName, JsonValues.asLong(value)));
                         } else {
                             // Single-valued numeric field
-                            document.add(new NumericDocValuesField(fieldName, value.asLong()));
+                            document.add(new NumericDocValuesField(fieldName, JsonValues.asLong(value)));
                         }
                     }
                     break;
@@ -133,10 +134,10 @@ public class LuceneProjectionContext extends ProjectionContext {
                     if (value.isNumber()) {
                         if (isMultiValued) {
                             // Multi-valued numeric field (store as long)
-                            document.add(new SortedNumericDocValuesField(fieldName, value.asInt()));
+                            document.add(new SortedNumericDocValuesField(fieldName, JsonValues.asInt(value)));
                         } else {
                             // Single-valued numeric field
-                            document.add(new NumericDocValuesField(fieldName, value.asInt()));
+                            document.add(new NumericDocValuesField(fieldName, JsonValues.asInt(value)));
                         }
                     }
                     break;
@@ -145,10 +146,10 @@ public class LuceneProjectionContext extends ProjectionContext {
                         if (isMultiValued) {
                             // Multi-valued double field (encode as sortable long)
                             document.add(new SortedNumericDocValuesField(fieldName, 
-                                Double.doubleToRawLongBits(value.asDouble())));
+                                Double.doubleToRawLongBits(JsonValues.asDouble(value))));
                         } else {
                             // Single-valued double field
-                            document.add(new DoubleDocValuesField(fieldName, value.asDouble()));
+                            document.add(new DoubleDocValuesField(fieldName, JsonValues.asDouble(value)));
                         }
                     }
                     break;
@@ -156,10 +157,10 @@ public class LuceneProjectionContext extends ProjectionContext {
                     if (value.isNumber()) {
                         if (isMultiValued) {
                             // Multi-valued date field (timestamps as longs)
-                            document.add(new SortedNumericDocValuesField(fieldName, value.asLong()));
+                            document.add(new SortedNumericDocValuesField(fieldName, JsonValues.asLong(value)));
                         } else {
                             // Single-valued date field
-                            document.add(new NumericDocValuesField(fieldName, value.asLong()));
+                            document.add(new NumericDocValuesField(fieldName, JsonValues.asLong(value)));
                         }
                     }
                     break;
@@ -176,14 +177,14 @@ public class LuceneProjectionContext extends ProjectionContext {
      * Extract text value from JsonNode.
      */
     private String getTextValue(JsonNode value) {
-        if (value.isTextual()) {
-            return value.textValue();
+        if (value.isString()) {
+            return JsonValues.textValue(value);
         } else if (value.isNumber()) {
-            return value.asText();
+            return JsonValues.asText(value);
         } else if (value.isBoolean()) {
-            return Boolean.toString(value.booleanValue());
+            return Boolean.toString(JsonValues.booleanValue(value));
         }
-        return value.asText();
+        return JsonValues.asText(value);
     }
 
     /**

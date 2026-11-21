@@ -21,7 +21,7 @@
  */
 package com.hitorro.index.config;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import com.hitorro.util.basefile.Name2JsonMapper;
 import com.hitorro.util.core.events.cache.HashCache;
 import com.hitorro.util.core.events.cache.SingletonCache;
@@ -32,6 +32,7 @@ import com.hitorro.util.basefile.tools.EnvBaseFiles;
 
 import java.util.HashMap;
 import java.util.Map;
+import com.hitorro.util.json.JsonValues;
 
 /**
  * Registry for Lucene field types, similar to SolrFieldTypes.
@@ -110,17 +111,17 @@ public class LuceneFieldTypes {
         Map<String, LuceneFieldType> loaded = new HashMap<>();
         if (fields.isArray()) {
             // {"fields": [{"name": "identifier", ...}, ...]}
-            var it = fields.elements();
+            var it = fields.values().iterator();
             while (it.hasNext()) {
                 JsonNode entry = it.next();
                 LuceneFieldType lft = new LuceneFieldType();
                 lft.init(entry);
-                String name = entry.has("name") ? entry.get("name").asText() : null;
+                String name = entry.has("name") ? JsonValues.asText(entry.get("name")) : null;
                 if (name != null) loaded.put(name, lft);
             }
         } else if (fields.isObject()) {
             // {"fields": {"identifier": {...}, ...}}
-            var it = fields.fields();
+            var it = fields.properties().iterator();
             while (it.hasNext()) {
                 var entry = it.next();
                 LuceneFieldType lft = new LuceneFieldType();

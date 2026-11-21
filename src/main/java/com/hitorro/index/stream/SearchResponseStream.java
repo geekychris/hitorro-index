@@ -21,7 +21,8 @@
  */
 package com.hitorro.index.stream;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
+import com.hitorro.util.json.JsonMappers;
 import com.hitorro.index.search.SearchResult;
 import com.hitorro.jsontypesystem.JVS;
 import reactor.core.publisher.Flux;
@@ -40,7 +41,7 @@ import reactor.core.publisher.Flux;
  * then update facet navigation after the stream completes.
  */
 public class SearchResponseStream {
-    private static final ObjectMapper objectMapper = new ObjectMapper();
+    private static final ObjectMapper objectMapper = JsonMappers.json();
 
     /**
      * Convert SearchResult to NDJson stream.

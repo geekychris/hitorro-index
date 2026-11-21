@@ -21,8 +21,9 @@
  */
 package com.hitorro.index.stream;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import com.hitorro.util.json.JsonMappers;
 import com.hitorro.index.indexer.JVSLuceneIndexWriter;
 import com.hitorro.jsontypesystem.JVS;
 import reactor.core.publisher.Flux;
@@ -40,7 +41,7 @@ import java.util.List;
  * Supports batch processing and error handling.
  */
 public class IndexerStream {
-    private static final ObjectMapper objectMapper = new ObjectMapper();
+    private static final ObjectMapper objectMapper = JsonMappers.json();
     private final JVSLuceneIndexWriter indexWriter;
     private final int batchSize;
     private final boolean commitAfterBatch;

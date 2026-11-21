@@ -3,8 +3,9 @@
  */
 package com.hitorro.index.readonly;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import com.hitorro.util.json.JsonMappers;
 import com.hitorro.index.config.IndexConfig;
 import com.hitorro.index.search.JVSLuceneSearcher;
 import com.hitorro.jsontypesystem.Type;
@@ -74,7 +75,7 @@ public class ReadOnlyIndexService implements AutoCloseable {
         Path sidecar = indexDir.resolve(".jvs-type.json");
         if (!Files.exists(sidecar)) return null;
         try {
-            JsonNode typeJson = new ObjectMapper().readTree(sidecar.toFile());
+            JsonNode typeJson = JsonMappers.json().readTree(sidecar.toFile());
             Type type = new Type();
             type.init(typeJson);
             return type;

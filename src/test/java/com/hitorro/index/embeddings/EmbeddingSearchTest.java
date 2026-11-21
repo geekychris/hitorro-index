@@ -124,8 +124,8 @@ public class EmbeddingSearchTest {
         }
         assertNotNull(idObj, "Document should have an ID");
         // Extract text value properly from JsonNode
-        String firstDocId = idObj instanceof com.fasterxml.jackson.databind.JsonNode 
-                ? ((com.fasterxml.jackson.databind.JsonNode) idObj).asText() 
+        String firstDocId = idObj instanceof tools.jackson.databind.JsonNode 
+                ? ((tools.jackson.databind.JsonNode) idObj).asString() 
                 : idObj.toString();
         assertTrue(firstDocId.equals("doc1") || firstDocId.equals("doc2"),
                 "First result should be a technology document, but got: " + firstDocId);

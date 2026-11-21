@@ -62,12 +62,12 @@ public class ExampleDatasetsTest {
     @Test
     public void testArticlesFollowJvsTypeSystem() {
         for (JVS article : ExampleDatasets.getArticles()) {
-            assertEquals("demo_article", article.get("type").asText(), "type should be demo_article");
+            assertEquals("demo_article", article.get("type").asString(), "type should be demo_article");
             assertNotNull(article.get("id.domain"), "should have id.domain");
             assertNotNull(article.get("id.did"), "should have id.did");
-            assertEquals("en", article.get("title.mls[0].lang").asText(), "title MLS should have lang");
-            assertFalse(article.get("title.mls[0].text").asText().isEmpty(), "title MLS should have text");
-            assertEquals("en", article.get("content.mls[0].lang").asText(), "content MLS should have lang");
+            assertEquals("en", article.get("title.mls[0].lang").asString(), "title MLS should have lang");
+            assertFalse(article.get("title.mls[0].text").asString().isEmpty(), "title MLS should have text");
+            assertEquals("en", article.get("content.mls[0].lang").asString(), "content MLS should have lang");
             assertNotNull(article.get("author"), "should have author");
             assertTrue(article.get("tags").isArray(), "tags should be array");
         }
@@ -76,11 +76,11 @@ public class ExampleDatasetsTest {
     @Test
     public void testProductsFollowJvsTypeSystem() {
         for (JVS product : ExampleDatasets.getProducts()) {
-            assertEquals("demo_product", product.get("type").asText(), "type should be demo_product");
+            assertEquals("demo_product", product.get("type").asString(), "type should be demo_product");
             assertNotNull(product.get("id.domain"), "should have id.domain");
             assertNotNull(product.get("id.did"), "should have id.did");
-            assertEquals("en", product.get("title.mls[0].lang").asText(), "title MLS should have lang");
-            assertEquals("en", product.get("description.mls[0].lang").asText(), "description MLS should have lang");
+            assertEquals("en", product.get("title.mls[0].lang").asString(), "title MLS should have lang");
+            assertEquals("en", product.get("description.mls[0].lang").asString(), "description MLS should have lang");
             assertNotNull(product.get("brand"), "should have brand");
             assertNotNull(product.get("price"), "should have price");
             assertNotNull(product.get("sku"), "should have sku");
@@ -91,11 +91,11 @@ public class ExampleDatasetsTest {
     @Test
     public void testDocumentsFollowJvsTypeSystem() {
         for (JVS doc : ExampleDatasets.getDocumentDocs()) {
-            assertEquals("demo_document", doc.get("type").asText(), "type should be demo_document");
+            assertEquals("demo_document", doc.get("type").asString(), "type should be demo_document");
             assertNotNull(doc.get("id.domain"), "should have id.domain");
             assertNotNull(doc.get("id.did"), "should have id.did");
-            assertEquals("en", doc.get("title.mls[0].lang").asText(), "title MLS should have lang");
-            assertEquals("en", doc.get("body.mls[0].lang").asText(), "body MLS should have lang");
+            assertEquals("en", doc.get("title.mls[0].lang").asString(), "title MLS should have lang");
+            assertEquals("en", doc.get("body.mls[0].lang").asString(), "body MLS should have lang");
             assertNotNull(doc.get("author"), "should have author");
             assertNotNull(doc.get("department"), "should have department");
             assertTrue(doc.get("keywords").isArray(), "keywords should be array");
@@ -108,8 +108,8 @@ public class ExampleDatasetsTest {
         Set<String> allIds = new java.util.HashSet<>();
         for (ExampleDatasets.Dataset ds : ExampleDatasets.Dataset.values()) {
             for (JVS doc : ExampleDatasets.getDocuments(ds)) {
-                String domain = doc.get("id.domain").asText();
-                String did = doc.get("id.did").asText();
+                String domain = doc.get("id.domain").asString();
+                String did = doc.get("id.did").asString();
                 assertTrue(allIds.add(domain + "/" + did), "Duplicate ID: " + domain + "/" + did);
             }
         }

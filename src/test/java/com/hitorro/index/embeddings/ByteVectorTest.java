@@ -108,8 +108,8 @@ public class ByteVectorTest {
         Object idObj = firstDoc.get("_uid");
         if (idObj == null) idObj = firstDoc.get("id.did");
         assertNotNull(idObj);
-        String firstDocId = idObj instanceof com.fasterxml.jackson.databind.JsonNode 
-                ? ((com.fasterxml.jackson.databind.JsonNode) idObj).asText() 
+        String firstDocId = idObj instanceof tools.jackson.databind.JsonNode 
+                ? ((tools.jackson.databind.JsonNode) idObj).asString() 
                 : idObj.toString();
         assertTrue(firstDocId.equals("doc1") || firstDocId.equals("doc2"));
     }
@@ -135,8 +135,8 @@ public class ByteVectorTest {
         for (int i = 0; i < 2; i++) {
             Object idObj = result.getDocuments().get(i).get("_uid");
             if (idObj == null) idObj = result.getDocuments().get(i).get("id.did");
-            String id = idObj instanceof com.fasterxml.jackson.databind.JsonNode 
-                    ? ((com.fasterxml.jackson.databind.JsonNode) idObj).asText() 
+            String id = idObj instanceof tools.jackson.databind.JsonNode 
+                    ? ((tools.jackson.databind.JsonNode) idObj).asString() 
                     : (idObj != null ? idObj.toString() : "unknown");
             topTwoIds.add(id);
         }
@@ -147,8 +147,8 @@ public class ByteVectorTest {
         // Third should be doc3
         Object idObj3 = result.getDocuments().get(2).get("_uid");
         if (idObj3 == null) idObj3 = result.getDocuments().get(2).get("id.did");
-        String thirdId = idObj3 instanceof com.fasterxml.jackson.databind.JsonNode 
-                ? ((com.fasterxml.jackson.databind.JsonNode) idObj3).asText() 
+        String thirdId = idObj3 instanceof tools.jackson.databind.JsonNode 
+                ? ((tools.jackson.databind.JsonNode) idObj3).asString() 
                 : (idObj3 != null ? idObj3.toString() : "unknown");
         assertEquals("doc3", thirdId);
     }
